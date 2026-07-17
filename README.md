@@ -181,6 +181,7 @@ Run `make help` to see all available commands:
 
 ## Documentation
 
+- [Contributing and local testing](CONTRIBUTING.md) - Test development changes without removing the installed app
 - [Marketing Plan](MarketingPlan.md) - Launch strategy and growth plans
 
 ## License
