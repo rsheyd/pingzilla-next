@@ -403,6 +403,7 @@ body {
 }
 
 .speed-test-btn,
+.back-to-live-btn,
 .network-name-editor button {
   border: 1px solid #3f4b5f;
   border-radius: 5px;
@@ -416,6 +417,10 @@ body {
 .speed-test-btn:disabled {
   cursor: progress;
   opacity: 0.6;
+}
+
+.back-to-live-btn {
+  margin-left: auto;
 }
 
 .speed-test-error {

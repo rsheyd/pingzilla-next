@@ -76,10 +76,20 @@ codesign --force --deep --sign - \
   src-tauri/target/release/bundle/macos/PingZilla.app
 ```
 
-Then launch it:
+Quit any running copy of PingZilla before testing the bundle so that two processes do not monitor and write history at the same time. To launch the bundle in place:
 
 ```bash
 open src-tauri/target/release/bundle/macos/PingZilla.app
 ```
+
+To install the local build in `/Applications`, sign it first using the command above. If an older copy is already installed, remove or replace that entire app bundle rather than merging files into it. Then copy and launch the new bundle:
+
+```bash
+rm -rf /Applications/PingZilla.app
+cp -R src-tauri/target/release/bundle/macos/PingZilla.app /Applications/
+open /Applications/PingZilla.app
+```
+
+Signing before copying preserves the completed bundle's signature; modifying files inside the app afterward invalidates it.
 
 This ad-hoc signature is for local testing only; it is not a distribution or Mac App Store signature.

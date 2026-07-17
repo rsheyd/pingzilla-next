@@ -240,6 +240,7 @@ function App() {
   const [histories, setHistories] = useState<Record<string, PingResult[]>>({});
   const [statistics, setStatistics] = useState<PingStatistics | null>(null);
   const [statsPeriod, setStatsPeriod] = useState(5); // minutes
+  const [historyViewportEnd, setHistoryViewportEnd] = useState<number | null>(null);
   const [threshold, setThreshold] = useState(400);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("icon_and_ping");
   const [showSettings, setShowSettings] = useState(false);
@@ -587,15 +588,19 @@ function App() {
   const currentPing = currentPings[activeTarget] ?? null;
   const currentMethod = currentMethods[activeTarget] ?? null;
   const history = histories[activeTarget] || [];
+  const historyWindowMs = statsPeriod * 60 * 1000;
   const sessionById = useMemo(
     () => new Map(networkSessions.map((session) => [session.id, session])),
     [networkSessions],
   );
   const chart = useMemo(() => {
-    const axisEnd = Date.now();
-    const axisStart = axisEnd - statsPeriod * 60 * 1000;
+    const axisEnd = historyViewportEnd ?? Date.now();
+    const axisStart = axisEnd - historyWindowMs;
     const filtered = history.filter(
-      (ping) => new Date(ping.timestamp).getTime() >= axisStart,
+      (ping) => {
+        const timestamp = new Date(ping.timestamp).getTime();
+        return timestamp >= axisStart && timestamp <= axisEnd;
+      },
     );
     const sampled = downsampleHistory(filtered);
     const sessionIds = Array.from(
@@ -640,9 +645,41 @@ function App() {
           ping: nearest,
           speedTest: test,
         };
-      });
+    });
     return { rows, segments, markers, axisStart, axisEnd };
-  }, [history, sessionById, speedTests, statsPeriod]);
+  }, [history, historyViewportEnd, historyWindowMs, sessionById, speedTests]);
+
+  const scrollHistory = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      const horizontalDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ? event.deltaX
+        : event.shiftKey
+          ? event.deltaY
+          : 0;
+      if (horizontalDelta === 0 || history.length === 0) return;
+
+      event.preventDefault();
+      const earliestTimestamp = new Date(history[0].timestamp).getTime();
+      const earliestEnd = Math.min(
+        Date.now(),
+        earliestTimestamp + historyWindowMs,
+      );
+      const millisecondsPerPixel = historyWindowMs / 500;
+
+      setHistoryViewportEnd((currentEnd) => {
+        const nextEnd = Math.max(
+          earliestEnd,
+          Math.min(Date.now(), (currentEnd ?? Date.now()) + horizontalDelta * millisecondsPerPixel),
+        );
+        return Date.now() - nextEnd < 1000 ? null : nextEnd;
+      });
+    },
+    [history, historyWindowMs],
+  );
+
+  useEffect(() => {
+    setHistoryViewportEnd(null);
+  }, [activeTarget, statsPeriod]);
 
   useEffect(() => {
     if (!selectedPing?.session_id) {
@@ -1002,7 +1039,11 @@ function App() {
       )}
 
       {/* Ping Graph */}
-      <div className="graph-container">
+      <div
+        className="graph-container"
+        onWheel={scrollHistory}
+        title="Scroll horizontally, or hold Shift while scrolling, to browse history"
+      >
         <ResponsiveContainer width="100%" height={140}>
           <ComposedChart
             data={chart.rows}
@@ -1095,6 +1136,14 @@ function App() {
             ? `${chart.rows.length} plotted samples`
             : "No samples in this range"}
         </span>
+        {historyViewportEnd !== null && (
+          <button
+            className="back-to-live-btn"
+            onClick={() => setHistoryViewportEnd(null)}
+          >
+            Back to live
+          </button>
+        )}
         <button
           className="speed-test-btn"
           onClick={runSpeedTest}
