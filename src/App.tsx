@@ -1,18 +1,20 @@
 // ABOUTME: PingZilla React frontend - displays ping graph and current latency
 // ABOUTME: Supports multiple targets with tabs and statistics display
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
-  LineChart,
+  ComposedChart,
   Line,
   XAxis,
   YAxis,
   ResponsiveContainer,
+  ReferenceDot,
   ReferenceLine,
+  Tooltip,
 } from "recharts";
 import "./App.css";
 
@@ -69,6 +71,7 @@ interface PingResult {
   latency_ms: number | null;
   target: string;
   method: PingMethod | null;
+  session_id: string | null;
 }
 
 interface PingStatistics {
@@ -80,9 +83,42 @@ interface PingStatistics {
   failed_pings: number;
 }
 
-interface ChartData {
-  time: string;
-  latency: number | null;
+interface NetworkSession {
+  id: string;
+  fingerprint: string;
+  public_ip: string;
+  isp: string | null;
+  label: string | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+interface SpeedTestResult {
+  id: string;
+  timestamp: string;
+  session_id: string | null;
+  download_mbps: number;
+  upload_mbps: number;
+  loaded_latency_ms: number | null;
+  idle_latency_ms: number | null;
+  responsiveness_rpm: number | null;
+  interface_name: string | null;
+}
+
+interface SessionDetails {
+  session: NetworkSession;
+  median_ms: number | null;
+  average_ms: number | null;
+  p95_ms: number | null;
+  packet_loss_pct: number;
+  total_pings: number;
+  latest_speed_test: SpeedTestResult | null;
+}
+
+interface ChartRow {
+  timestamp: number;
+  ping: PingResult;
+  [key: string]: number | PingResult | null;
 }
 
 interface IpInfo {
@@ -150,6 +186,49 @@ const countryCodeToFlag = (code: string): string => {
     .join("");
 };
 
+const NETWORK_COLORS = [
+  "#3b82f6",
+  "#22c55e",
+  "#f97316",
+  "#a855f7",
+  "#06b6d4",
+  "#eab308",
+  "#ec4899",
+];
+
+const stableColor = (value: string): string => {
+  let hash = 0;
+  for (const char of value) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return NETWORK_COLORS[Math.abs(hash) % NETWORK_COLORS.length];
+};
+
+const downsampleHistory = (history: PingResult[], maximum = 900): PingResult[] => {
+  if (history.length <= maximum) return history;
+  const bucketSize = Math.ceil(history.length / (maximum / 2));
+  const sampled: PingResult[] = [];
+
+  for (let start = 0; start < history.length; start += bucketSize) {
+    const bucket = history.slice(start, start + bucketSize);
+    const timedOut = bucket.find((ping) => ping.latency_ms === null);
+    const successful = bucket.filter((ping) => ping.latency_ms !== null);
+    const lowest = successful.reduce<PingResult | null>(
+      (best, ping) => !best || (ping.latency_ms ?? Infinity) < (best.latency_ms ?? Infinity) ? ping : best,
+      null,
+    );
+    const highest = successful.reduce<PingResult | null>(
+      (best, ping) => !best || (ping.latency_ms ?? -Infinity) > (best.latency_ms ?? -Infinity) ? ping : best,
+      null,
+    );
+    for (const ping of [lowest, highest, timedOut]) {
+      if (ping && !sampled.includes(ping)) sampled.push(ping);
+    }
+  }
+
+  return sampled.sort(
+    (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+  );
+};
+
 function App() {
   // Detect view mode from URL params
   const viewMode = getViewMode();
@@ -158,7 +237,7 @@ function App() {
   const [activeTarget, setActiveTarget] = useState("1.1.1.1");
   const [currentPings, setCurrentPings] = useState<Record<string, number | null>>({});
   const [currentMethods, setCurrentMethods] = useState<Record<string, PingMethod | null>>({});
-  const [histories, setHistories] = useState<Record<string, ChartData[]>>({});
+  const [histories, setHistories] = useState<Record<string, PingResult[]>>({});
   const [statistics, setStatistics] = useState<PingStatistics | null>(null);
   const [statsPeriod, setStatsPeriod] = useState(5); // minutes
   const [threshold, setThreshold] = useState(400);
@@ -184,6 +263,16 @@ function App() {
   const [showVpnSettings, setShowVpnSettings] = useState(false);
   // Ping interval setting (in seconds)
   const [pingInterval, setPingInterval] = useState(10);
+  const [speedTestDuration, setSpeedTestDuration] = useState(7);
+  const [networkSessions, setNetworkSessions] = useState<NetworkSession[]>([]);
+  const [speedTests, setSpeedTests] = useState<SpeedTestResult[]>([]);
+  const [selectedPing, setSelectedPing] = useState<PingResult | null>(null);
+  const [sessionDetails, setSessionDetails] = useState<SessionDetails | null>(null);
+  const [networkName, setNetworkName] = useState("");
+  const [editingNetworkName, setEditingNetworkName] = useState(false);
+  const [speedTesting, setSpeedTesting] = useState(false);
+  const [speedTestSecondsRemaining, setSpeedTestSecondsRemaining] = useState(0);
+  const [speedTestError, setSpeedTestError] = useState<string | null>(null);
   // App version from Tauri
   const [appVersion, setAppVersion] = useState("");
 
@@ -210,21 +299,12 @@ function App() {
         setAppVersion(version);
 
         // Load history for each target
-        const newHistories: Record<string, ChartData[]> = {};
+        const newHistories: Record<string, PingResult[]> = {};
         const newCurrentPings: Record<string, number | null> = {};
 
         for (const target of loadedTargets) {
           const pingHistory = await invoke<PingResult[]>("get_ping_history", { target });
-          const chartData = pingHistory.slice(-60).map((p) => ({
-            time: new Date(p.timestamp).toLocaleTimeString("en-US", {
-              hour12: false,
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            }),
-            latency: p.latency_ms,
-          }));
-          newHistories[target] = chartData;
+          newHistories[target] = pingHistory;
 
           if (pingHistory.length > 0) {
             const last = pingHistory[pingHistory.length - 1];
@@ -234,6 +314,13 @@ function App() {
 
         setHistories(newHistories);
         setCurrentPings(newCurrentPings);
+
+        const [loadedSessions, loadedSpeedTests] = await Promise.all([
+          invoke<NetworkSession[]>("get_network_sessions"),
+          invoke<SpeedTestResult[]>("get_speed_tests"),
+        ]);
+        setNetworkSessions(loadedSessions);
+        setSpeedTests(loadedSpeedTests);
 
         // Load IP info
         try {
@@ -267,6 +354,13 @@ function App() {
           setPingInterval(loadedPingInterval);
         } catch (e) {
           console.error("Failed to load ping interval:", e);
+        }
+
+        try {
+          const loadedDuration = await invoke<number>("get_speed_test_duration");
+          setSpeedTestDuration(loadedDuration);
+        } catch (e) {
+          console.error("Failed to load speed test duration:", e);
         }
       } catch (e) {
         console.error("Failed to load initial data:", e);
@@ -335,24 +429,25 @@ function App() {
 
       setHistories((prev) => {
         const targetHistory = prev[result.target] || [];
-        const newData = [
-          ...targetHistory,
-          {
-            time: new Date(result.timestamp).toLocaleTimeString("en-US", {
-              hour12: false,
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            }),
-            latency: result.latency_ms,
-          },
-        ].slice(-60);
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const newData = [...targetHistory, result].filter(
+          (ping) => new Date(ping.timestamp).getTime() >= cutoff,
+        );
         return { ...prev, [result.target]: newData };
       });
     });
 
     return () => {
       unlisten.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<NetworkSession>("network-session-update", async () => {
+      setNetworkSessions(await invoke<NetworkSession[]>("get_network_sessions"));
+    });
+    return () => {
+      unlisten.then((stop) => stop());
     };
   }, []);
 
@@ -451,11 +546,14 @@ function App() {
       await invoke("set_notification_threshold", { thresholdMs: threshold });
       await invoke("set_display_mode", { mode: displayMode });
       await invoke("set_ping_interval", { intervalSecs: pingInterval });
+      await invoke("set_speed_test_duration", {
+        durationSecs: speedTestDuration,
+      });
       setShowSettings(false);
     } catch (e) {
       console.error("Failed to save settings:", e);
     }
-  }, [threshold, displayMode, pingInterval]);
+  }, [threshold, displayMode, pingInterval, speedTestDuration]);
 
   const toggleLaunchAtLogin = useCallback(async () => {
     try {
@@ -489,6 +587,130 @@ function App() {
   const currentPing = currentPings[activeTarget] ?? null;
   const currentMethod = currentMethods[activeTarget] ?? null;
   const history = histories[activeTarget] || [];
+  const sessionById = useMemo(
+    () => new Map(networkSessions.map((session) => [session.id, session])),
+    [networkSessions],
+  );
+  const chart = useMemo(() => {
+    const axisEnd = Date.now();
+    const axisStart = axisEnd - statsPeriod * 60 * 1000;
+    const filtered = history.filter(
+      (ping) => new Date(ping.timestamp).getTime() >= axisStart,
+    );
+    const sampled = downsampleHistory(filtered);
+    const sessionIds = Array.from(
+      new Set(sampled.map((ping) => ping.session_id || "unknown")),
+    );
+    const segments = sessionIds.map((sessionId, index) => {
+      const session = sessionById.get(sessionId);
+      return {
+        key: `segment_${index}`,
+        sessionId,
+        color: stableColor(session?.label || session?.fingerprint || sessionId),
+      };
+    });
+    const segmentKey = new Map(
+      segments.map((segment) => [segment.sessionId, segment.key]),
+    );
+    const rows: ChartRow[] = sampled.map((ping) => {
+      const row: ChartRow = {
+        timestamp: new Date(ping.timestamp).getTime(),
+        ping,
+      };
+      row[segmentKey.get(ping.session_id || "unknown") || "segment_0"] =
+        ping.latency_ms;
+      return row;
+    });
+    const markers = speedTests
+      .filter((test) => {
+        const timestamp = new Date(test.timestamp).getTime();
+        return timestamp >= axisStart && sampled.length > 0;
+      })
+      .map((test) => {
+        const timestamp = new Date(test.timestamp).getTime();
+        const nearest = sampled.reduce((best, ping) =>
+          Math.abs(new Date(ping.timestamp).getTime() - timestamp) <
+          Math.abs(new Date(best.timestamp).getTime() - timestamp)
+            ? ping
+            : best,
+        );
+        return {
+          timestamp,
+          markerLatency: nearest.latency_ms ?? 0,
+          ping: nearest,
+          speedTest: test,
+        };
+      });
+    return { rows, segments, markers, axisStart, axisEnd };
+  }, [history, sessionById, speedTests, statsPeriod]);
+
+  useEffect(() => {
+    if (!selectedPing?.session_id) {
+      setSessionDetails(null);
+      setNetworkName("");
+      return;
+    }
+    invoke<SessionDetails>("get_session_details", {
+      sessionId: selectedPing.session_id,
+      target: activeTarget,
+    })
+      .then((details) => {
+        setSessionDetails(details);
+        setNetworkName(details.session.label || "");
+        setEditingNetworkName(false);
+      })
+      .catch((error) => {
+        console.error("Failed to load session details:", error);
+        setSessionDetails(null);
+      });
+  }, [activeTarget, selectedPing]);
+
+  const renameSelectedNetwork = useCallback(async () => {
+    if (!sessionDetails) return;
+    await invoke("rename_network_session", {
+      sessionId: sessionDetails.session.id,
+      label: networkName,
+    });
+    const sessions = await invoke<NetworkSession[]>("get_network_sessions");
+    setNetworkSessions(sessions);
+    setSessionDetails(await invoke<SessionDetails>("get_session_details", {
+      sessionId: sessionDetails.session.id,
+      target: activeTarget,
+    }));
+    setEditingNetworkName(false);
+  }, [activeTarget, networkName, sessionDetails]);
+
+  const runSpeedTest = useCallback(async () => {
+    setSpeedTestSecondsRemaining(speedTestDuration);
+    setSpeedTesting(true);
+    setSpeedTestError(null);
+    try {
+      const result = await invoke<SpeedTestResult>("run_speed_test");
+      setSpeedTests((previous) => [...previous, result]);
+      if (selectedPing?.session_id === result.session_id) {
+        setSessionDetails(await invoke<SessionDetails>("get_session_details", {
+          sessionId: result.session_id,
+          target: activeTarget,
+        }));
+      }
+    } catch (error) {
+      setSpeedTestError(String(error));
+    } finally {
+      setSpeedTesting(false);
+    }
+  }, [activeTarget, selectedPing, speedTestDuration]);
+
+  useEffect(() => {
+    if (!speedTesting) {
+      return;
+    }
+
+    const countdown = window.setInterval(() => {
+      setSpeedTestSecondsRemaining((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+
+    return () => window.clearInterval(countdown);
+  }, [speedTesting]);
 
   // Check if using TCP fallback (not real ICMP)
   const isTcpFallback = currentMethod && currentMethod !== "Icmp";
@@ -671,6 +893,21 @@ function App() {
             </select>
           </div>
           <div className="setting-row">
+            <label>Speed test length:</label>
+            <input
+              type="number"
+              value={speedTestDuration}
+              onChange={(event) =>
+                setSpeedTestDuration(
+                  Math.min(30, Math.max(3, Number(event.target.value) || 7)),
+                )
+              }
+              min={3}
+              max={30}
+            />
+            <span>sec</span>
+          </div>
+          <div className="setting-row">
             <label>Alert threshold:</label>
             <input
               type="number"
@@ -767,13 +1004,40 @@ function App() {
       {/* Ping Graph */}
       <div className="graph-container">
         <ResponsiveContainer width="100%" height={140}>
-          <LineChart data={history} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+          <ComposedChart
+            data={chart.rows}
+            margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
+            onClick={(state) => {
+              const activeTimestamp = Number(state.activeLabel);
+              if (!Number.isFinite(activeTimestamp) || chart.rows.length === 0) {
+                return;
+              }
+
+              const nearestRow = chart.rows.reduce((nearest, row) =>
+                Math.abs(row.timestamp - activeTimestamp) <
+                Math.abs(nearest.timestamp - activeTimestamp)
+                  ? row
+                  : nearest,
+              );
+              setSelectedPing(nearestRow.ping);
+            }}
+          >
             <XAxis
-              dataKey="time"
+              dataKey="timestamp"
+              type="number"
+              scale="time"
+              domain={[chart.axisStart, chart.axisEnd]}
+              allowDataOverflow
               tick={{ fontSize: 10, fill: "#888" }}
               interval="preserveStartEnd"
               tickLine={false}
               axisLine={{ stroke: "#333" }}
+              tickFormatter={(timestamp) =>
+                new Date(timestamp).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              }
             />
             <YAxis
               tick={{ fontSize: 10, fill: "#888" }}
@@ -787,18 +1051,182 @@ function App() {
               strokeDasharray="3 3"
               strokeOpacity={0.5}
             />
-            <Line
-              type="monotone"
-              dataKey="latency"
-              stroke="#3b82f6"
-              strokeWidth={2}
-              dot={false}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          </LineChart>
+            {selectedPing && (
+              <ReferenceLine
+                x={new Date(selectedPing.timestamp).getTime()}
+                stroke="#f8fafc"
+                strokeDasharray="2 3"
+                strokeOpacity={0.65}
+              />
+            )}
+            <Tooltip content={() => null} cursor={{ stroke: "#64748b" }} />
+            {chart.segments.map((segment) => (
+              <Line
+                key={segment.key}
+                type="monotone"
+                dataKey={segment.key}
+                stroke={segment.color}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 4 }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            ))}
+            {chart.markers.map((marker) => (
+              <ReferenceDot
+                key={marker.speedTest.id}
+                x={marker.timestamp}
+                y={marker.markerLatency}
+                r={5}
+                fill="#f8fafc"
+                stroke="#111827"
+                strokeWidth={1}
+                onClick={() => setSelectedPing(marker.ping)}
+              />
+            ))}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
+
+      <div className="history-actions">
+        <span>
+          {chart.rows.length > 0
+            ? `${chart.rows.length} plotted samples`
+            : "No samples in this range"}
+        </span>
+        <button
+          className="speed-test-btn"
+          onClick={runSpeedTest}
+          disabled={speedTesting}
+          title="Uses meaningful data and may briefly load your connection"
+        >
+          {speedTesting
+            ? `Testing connection… (${speedTestSecondsRemaining}s)`
+            : "Run speed test"}
+        </button>
+      </div>
+      {speedTestError && <div className="speed-test-error">{speedTestError}</div>}
+
+      {selectedPing && (
+        <div className="point-details">
+          <div className="point-details-time">
+            {new Date(selectedPing.timestamp).toLocaleString([], {
+              dateStyle: "medium",
+              timeStyle: "medium",
+            })}
+          </div>
+          <div className="point-details-network-row">
+            <div className="point-details-network">
+              {sessionDetails?.session.label ||
+                sessionDetails?.session.isp ||
+                "Unknown connection"}
+            </div>
+            {sessionDetails && !editingNetworkName && (
+              <button
+                className="network-edit-btn"
+                onClick={() => setEditingNetworkName(true)}
+                aria-label="Rename network"
+                title="Rename network"
+              >
+                ✎
+              </button>
+            )}
+          </div>
+          {sessionDetails && editingNetworkName && (
+            <div className="network-name-editor">
+              <input
+                value={networkName}
+                onChange={(event) => setNetworkName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") renameSelectedNetwork();
+                  if (event.key === "Escape") {
+                    setNetworkName(sessionDetails.session.label || "");
+                    setEditingNetworkName(false);
+                  }
+                }}
+                placeholder="Name this network"
+                maxLength={80}
+                autoFocus
+              />
+              <button
+                className="network-name-cancel"
+                onClick={() => {
+                  setNetworkName(sessionDetails.session.label || "");
+                  setEditingNetworkName(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button onClick={renameSelectedNetwork}>Save name</button>
+            </div>
+          )}
+          <div className="point-details-grid">
+            <span>Ping</span>
+            <strong>
+              {selectedPing.latency_ms === null
+                ? "Timeout"
+                : `${Math.round(selectedPing.latency_ms)} ms`}
+            </strong>
+            <span>Session duration</span>
+            <strong>
+              {sessionDetails
+                ? `${Math.max(
+                    0,
+                    Math.round(
+                      (new Date(
+                        sessionDetails.session.ended_at || Date.now(),
+                      ).getTime() -
+                        new Date(sessionDetails.session.started_at).getTime()) /
+                        60000,
+                    ),
+                  )} min`
+                : "—"}
+            </strong>
+            <span>Session median</span>
+            <strong>
+              {sessionDetails?.median_ms != null
+                ? `${Math.round(sessionDetails.median_ms)} ms`
+                : "—"}
+            </strong>
+            <span>Session average</span>
+            <strong>
+              {sessionDetails?.average_ms != null
+                ? `${Math.round(sessionDetails.average_ms)} ms`
+                : "—"}
+            </strong>
+            <span>95th percentile</span>
+            <strong>
+              {sessionDetails?.p95_ms != null
+                ? `${Math.round(sessionDetails.p95_ms)} ms`
+                : "—"}
+            </strong>
+            <span>Packet loss</span>
+            <strong>
+              {sessionDetails
+                ? `${sessionDetails.packet_loss_pct.toFixed(1)}%`
+                : "—"}
+            </strong>
+          </div>
+          {sessionDetails?.latest_speed_test && (
+            <div className="speed-test-result">
+              <div>
+                Speed test at{" "}
+                {new Date(
+                  sessionDetails.latest_speed_test.timestamp,
+                ).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </div>
+              <strong>
+                ↓ {Math.round(sessionDetails.latest_speed_test.download_mbps)} Mbps
+                {"  "}↑ {Math.round(sessionDetails.latest_speed_test.upload_mbps)} Mbps
+              </strong>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Site Monitors Section */}
       <div className="site-monitors-section">

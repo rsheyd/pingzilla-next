@@ -22,6 +22,7 @@ body {
   flex-direction: column;
   height: 100vh;
   padding: 12px;
+  overflow-y: auto;
 }
 
 /* Header */
@@ -389,6 +390,133 @@ body {
   flex: 1;
   min-height: 180px;
   margin: 0 -8px;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -20px 0 8px;
+  color: #777;
+  font-size: 10px;
+}
+
+.speed-test-btn,
+.network-name-editor button {
+  border: 1px solid #3f4b5f;
+  border-radius: 5px;
+  background: #263449;
+  color: #dbeafe;
+  padding: 5px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.speed-test-btn:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.speed-test-error {
+  margin-bottom: 8px;
+  color: #fca5a5;
+  font-size: 10px;
+}
+
+.point-details {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid #343c49;
+  border-radius: 8px;
+  background: #22262d;
+}
+
+.point-details-time {
+  color: #aab3c2;
+  font-size: 10px;
+}
+
+.point-details-network {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.point-details-network-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.network-edit-btn {
+  border: 0;
+  background: transparent;
+  color: #8b95a5;
+  padding: 1px 4px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.network-edit-btn:hover {
+  color: #dbeafe;
+}
+
+.network-name-editor {
+  display: flex;
+  gap: 6px;
+  margin: 9px 0;
+}
+
+.network-name-editor input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid #3d4654;
+  border-radius: 5px;
+  background: #171a1f;
+  color: #fff;
+  padding: 5px 7px;
+  font-size: 11px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.network-name-editor .network-name-cancel {
+  border-color: #444b55;
+  background: #30343a;
+  color: #c4c8cf;
+}
+
+.point-details-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 16px;
+  margin-top: 8px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.point-details-grid strong {
+  color: #f3f4f6;
+  font-weight: 600;
+  text-align: right;
+}
+
+.speed-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #363e4a;
+  color: #9ca3af;
+  font-size: 10px;
+}
+
+.speed-test-result strong {
+  color: #dbeafe;
+  font-size: 11px;
 }
 
 /* Footer */
