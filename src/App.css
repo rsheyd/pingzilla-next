@@ -452,6 +452,10 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
+  width: 100%;
+  max-width: 280px;
+  margin-right: auto;
+  margin-left: auto;
   margin-top: 3px;
 }
 
