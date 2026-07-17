@@ -432,6 +432,12 @@ body {
   background: #22262d;
 }
 
+.point-details-content {
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
 .point-details-time {
   color: #aab3c2;
   font-size: 10px;
@@ -492,7 +498,9 @@ body {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 5px 16px;
-  margin-top: 8px;
+  width: 100%;
+  max-width: 280px;
+  margin: 8px auto 0;
   color: #9ca3af;
   font-size: 11px;
 }

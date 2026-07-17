@@ -1110,6 +1110,7 @@ function App() {
 
       {selectedPing && (
         <div className="point-details">
+          <div className="point-details-content">
           <div className="point-details-time">
             {new Date(selectedPing.timestamp).toLocaleString([], {
               dateStyle: "medium",
@@ -1225,6 +1226,7 @@ function App() {
               </strong>
             </div>
           )}
+          </div>
         </div>
       )}
 
