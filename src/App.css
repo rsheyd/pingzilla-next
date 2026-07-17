@@ -438,6 +438,12 @@ body {
   margin: 0 auto;
 }
 
+@media (min-width: 600px) {
+  .point-details-content {
+    transform: translateX(30px);
+  }
+}
+
 .point-details-time {
   color: #aab3c2;
   font-size: 10px;
