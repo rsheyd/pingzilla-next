@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,14 +18,50 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{Mutex, Notify};
 
+const NETWORK_QUALITY_PATH: &str = "/usr/bin/networkQuality";
+
+fn run_network_quality_process(max_runtime_secs: u32) -> Result<serde_json::Value, String> {
+    let output = Command::new(NETWORK_QUALITY_PATH)
+        .args(["-c", "-M", &max_runtime_secs.to_string()])
+        .output()
+        .map_err(|error| format!("Unable to start networkQuality: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "networkQuality exited with {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("networkQuality returned invalid JSON: {error}"))
+}
+
+/// Diagnostic entry point used to validate networkQuality from the signed app binary.
+pub fn network_quality_smoke_test() -> Result<(), String> {
+    let result = run_network_quality_process(15)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result)
+            .map_err(|error| format!("Unable to format networkQuality output: {error}"))?
+    );
+    Ok(())
+}
+
 /// Method used to measure ping latency
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PingMethod {
-    Icmp,      // Real ICMP ping via system command
+    Icmp, // Real ICMP ping via system command
     // TCP variants kept for backwards compatibility with existing history data
-    TcpDns,    // (deprecated) TCP connect to port 53 (DNS)
-    TcpHttps,  // (deprecated) TCP connect to port 443
-    TcpHttp,   // (deprecated) TCP connect to port 80
+    TcpDns,   // (deprecated) TCP connect to port 53 (DNS)
+    TcpHttps, // (deprecated) TCP connect to port 443
+    TcpHttp,  // (deprecated) TCP connect to port 80
 }
 
 /// A single ping measurement
@@ -35,6 +72,8 @@ pub struct PingResult {
     pub target: String,
     #[serde(default)]
     pub method: Option<PingMethod>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Statistics for a target
@@ -64,6 +103,43 @@ pub struct IpInfo {
     pub country_code: String,
     pub city: Option<String>,
     pub isp: Option<String>,
+}
+
+/// A continuous period on one public IP + ISP fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkSession {
+    pub id: String,
+    pub fingerprint: String,
+    pub public_ip: String,
+    pub isp: Option<String>,
+    pub label: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// A user-triggered macOS networkQuality result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpeedTestResult {
+    pub id: String,
+    pub timestamp: DateTime<Utc>,
+    pub session_id: Option<String>,
+    pub download_mbps: f64,
+    pub upload_mbps: f64,
+    pub loaded_latency_ms: Option<f64>,
+    pub idle_latency_ms: Option<f64>,
+    pub responsiveness_rpm: Option<f64>,
+    pub interface_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionDetails {
+    pub session: NetworkSession,
+    pub median_ms: Option<f64>,
+    pub average_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub packet_loss_pct: f64,
+    pub total_pings: usize,
+    pub latest_speed_test: Option<SpeedTestResult>,
 }
 
 /// Site monitor configuration
@@ -186,6 +262,15 @@ pub struct AppState {
     pub wake_notify: Arc<Notify>,
     // User-configurable ping interval (in seconds)
     pub ping_interval_secs: Mutex<u32>,
+    pub speed_test_duration_secs: Mutex<u32>,
+    // Network-context history
+    pub network_sessions: Mutex<VecDeque<NetworkSession>>,
+    pub current_session_id: Mutex<Option<String>>,
+    pub network_aliases: Mutex<HashMap<String, String>>,
+    pub speed_tests: Mutex<VecDeque<SpeedTestResult>>,
+    pub speed_test_running: AtomicBool,
+    pub start_new_session_after_wake: AtomicBool,
+    pub shutdown_requested: AtomicBool,
 }
 
 impl Default for AppState {
@@ -218,6 +303,14 @@ impl Default for AppState {
             wake_notify: Arc::new(Notify::new()),
             // Default ping interval: 10 seconds
             ping_interval_secs: Mutex::new(10),
+            speed_test_duration_secs: Mutex::new(7),
+            network_sessions: Mutex::new(VecDeque::new()),
+            current_session_id: Mutex::new(None),
+            network_aliases: Mutex::new(HashMap::new()),
+            speed_tests: Mutex::new(VecDeque::new()),
+            speed_test_running: AtomicBool::new(false),
+            start_new_session_after_wake: AtomicBool::new(false),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
 }
@@ -251,6 +344,304 @@ async fn get_ping_history(
         .get(&target)
         .map(|h| h.iter().cloned().collect())
         .unwrap_or_default())
+}
+
+fn network_fingerprint(info: &IpInfo) -> String {
+    format!(
+        "{}|{}",
+        info.ip.trim(),
+        info.isp.as_deref().unwrap_or("Unknown ISP").trim()
+    )
+}
+
+async fn ensure_network_session(
+    state: &Arc<AppState>,
+    info: &IpInfo,
+    force_new: bool,
+) -> Option<NetworkSession> {
+    let fingerprint = network_fingerprint(info);
+    let current_id = state.current_session_id.lock().await.clone();
+
+    if !force_new {
+        if let Some(current_id) = &current_id {
+            let sessions = state.network_sessions.lock().await;
+            if sessions
+                .iter()
+                .any(|session| session.id == *current_id && session.fingerprint == fingerprint)
+            {
+                return None;
+            }
+        }
+    }
+
+    let now = Utc::now();
+    let label = state
+        .network_aliases
+        .lock()
+        .await
+        .get(&fingerprint)
+        .cloned();
+    let mut sessions = state.network_sessions.lock().await;
+
+    if let Some(current_id) = current_id {
+        if let Some(current) = sessions.iter_mut().find(|session| session.id == current_id) {
+            current.ended_at = Some(now);
+        }
+    }
+
+    let session = NetworkSession {
+        id: format!("session-{}", now.timestamp_micros()),
+        fingerprint,
+        public_ip: info.ip.clone(),
+        isp: info.isp.clone(),
+        label,
+        started_at: now,
+        ended_at: None,
+    };
+    sessions.push_back(session.clone());
+
+    let cutoff = now - chrono::Duration::hours(24);
+    while sessions
+        .front()
+        .is_some_and(|oldest| oldest.ended_at.unwrap_or(oldest.started_at) < cutoff)
+    {
+        sessions.pop_front();
+    }
+    drop(sessions);
+
+    *state.current_session_id.lock().await = Some(session.id.clone());
+    let startup_cutoff = now - chrono::Duration::minutes(5);
+    for ping in state
+        .ping_history
+        .lock()
+        .await
+        .values_mut()
+        .flat_map(|history| history.iter_mut())
+        .filter(|ping| ping.session_id.is_none() && ping.timestamp >= startup_cutoff)
+    {
+        ping.session_id = Some(session.id.clone());
+    }
+    Some(session)
+}
+
+#[tauri::command]
+async fn get_network_sessions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<NetworkSession>, String> {
+    Ok(state
+        .network_sessions
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect())
+}
+
+#[tauri::command]
+async fn get_speed_tests(state: State<'_, Arc<AppState>>) -> Result<Vec<SpeedTestResult>, String> {
+    Ok(state.speed_tests.lock().await.iter().cloned().collect())
+}
+
+#[tauri::command]
+async fn rename_network_session(
+    session_id: String,
+    label: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    if label.len() > 80 {
+        return Err("Network name must be 80 characters or fewer".to_string());
+    }
+
+    let fingerprint = {
+        let sessions = state.network_sessions.lock().await;
+        sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.fingerprint.clone())
+            .ok_or_else(|| "Network session not found".to_string())?
+    };
+
+    if label.is_empty() {
+        state.network_aliases.lock().await.remove(&fingerprint);
+    } else {
+        state
+            .network_aliases
+            .lock()
+            .await
+            .insert(fingerprint.clone(), label.clone());
+    }
+
+    for session in state
+        .network_sessions
+        .lock()
+        .await
+        .iter_mut()
+        .filter(|session| session.fingerprint == fingerprint)
+    {
+        session.label = (!label.is_empty()).then(|| label.clone());
+    }
+
+    save_history_async(state.inner()).await;
+    Ok(())
+}
+
+fn percentile(sorted: &[f64], percentile: f64) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let index = ((sorted.len() as f64 * percentile).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len() - 1);
+    Some(sorted[index])
+}
+
+#[tauri::command]
+async fn get_session_details(
+    session_id: String,
+    target: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SessionDetails, String> {
+    let session = state
+        .network_sessions
+        .lock()
+        .await
+        .iter()
+        .find(|session| session.id == session_id)
+        .cloned()
+        .ok_or_else(|| "Network session not found".to_string())?;
+
+    let matching: Vec<PingResult> = state
+        .ping_history
+        .lock()
+        .await
+        .get(&target)
+        .map(|history| {
+            history
+                .iter()
+                .filter(|ping| ping.session_id.as_deref() == Some(&session_id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let total_pings = matching.len();
+    let failed_pings = matching
+        .iter()
+        .filter(|ping| ping.latency_ms.is_none())
+        .count();
+    let mut successful: Vec<f64> = matching.iter().filter_map(|ping| ping.latency_ms).collect();
+    successful.sort_by(f64::total_cmp);
+
+    let average_ms =
+        (!successful.is_empty()).then(|| successful.iter().sum::<f64>() / successful.len() as f64);
+    let median_ms = if successful.is_empty() {
+        None
+    } else if successful.len().is_multiple_of(2) {
+        let middle = successful.len() / 2;
+        Some((successful[middle - 1] + successful[middle]) / 2.0)
+    } else {
+        Some(successful[successful.len() / 2])
+    };
+    let packet_loss_pct = if total_pings == 0 {
+        0.0
+    } else {
+        failed_pings as f64 / total_pings as f64 * 100.0
+    };
+    let latest_speed_test = state
+        .speed_tests
+        .lock()
+        .await
+        .iter()
+        .rev()
+        .find(|test| test.session_id.as_deref() == Some(&session_id))
+        .cloned();
+
+    Ok(SessionDetails {
+        session,
+        median_ms,
+        average_ms,
+        p95_ms: percentile(&successful, 0.95),
+        packet_loss_pct,
+        total_pings,
+        latest_speed_test,
+    })
+}
+
+fn json_number(value: &serde_json::Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(serde_json::Value::as_f64)
+}
+
+fn median_json_array(value: &serde_json::Value, key: &str) -> Option<f64> {
+    let mut values: Vec<f64> = value
+        .get(key)?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_f64)
+        .collect();
+    values.sort_by(f64::total_cmp);
+    if values.is_empty() {
+        None
+    } else if values.len().is_multiple_of(2) {
+        let middle = values.len() / 2;
+        Some((values[middle - 1] + values[middle]) / 2.0)
+    } else {
+        Some(values[values.len() / 2])
+    }
+}
+
+#[tauri::command]
+async fn run_speed_test(state: State<'_, Arc<AppState>>) -> Result<SpeedTestResult, String> {
+    if state
+        .speed_test_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A speed test is already running".to_string());
+    }
+
+    let session_id = state.current_session_id.lock().await.clone();
+    let duration_secs = *state.speed_test_duration_secs.lock().await;
+    let process_result =
+        tokio::task::spawn_blocking(move || run_network_quality_process(duration_secs)).await;
+    state.speed_test_running.store(false, Ordering::SeqCst);
+
+    let raw = process_result.map_err(|error| format!("networkQuality task failed: {error}"))??;
+    if let Some(domain) = raw.get("error_domain").and_then(serde_json::Value::as_str) {
+        let code = raw
+            .get("error_code")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or_default();
+        return Err(format!("networkQuality failed ({domain}, code {code})"));
+    }
+
+    let now = Utc::now();
+    let result = SpeedTestResult {
+        id: format!("speed-{}", now.timestamp_micros()),
+        timestamp: now,
+        session_id,
+        download_mbps: json_number(&raw, "dl_throughput").unwrap_or_default() / 1_000_000.0,
+        upload_mbps: json_number(&raw, "ul_throughput").unwrap_or_default() / 1_000_000.0,
+        loaded_latency_ms: median_json_array(&raw, "lud_self_h2_req_resp"),
+        idle_latency_ms: json_number(&raw, "base_rtt"),
+        responsiveness_rpm: json_number(&raw, "responsiveness"),
+        interface_name: raw
+            .get("interface_name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    };
+
+    let mut speed_tests = state.speed_tests.lock().await;
+    speed_tests.push_back(result.clone());
+    let cutoff = now - chrono::Duration::hours(24);
+    while speed_tests
+        .front()
+        .is_some_and(|oldest| oldest.timestamp < cutoff)
+    {
+        speed_tests.pop_front();
+    }
+    drop(speed_tests);
+    save_history_async(state.inner()).await;
+    Ok(result)
 }
 
 /// Get all targets
@@ -466,6 +857,7 @@ async fn get_statistics(
 #[tauri::command]
 async fn get_my_ip_info(
     force_refresh: Option<bool>,
+    app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<IpInfo, String> {
     let force = force_refresh.unwrap_or(false);
@@ -478,6 +870,9 @@ async fn get_my_ip_info(
         if let (Some(info), Some(checked_at)) = (cached, last_check) {
             // Cache for 5 minutes
             if Utc::now().signed_duration_since(checked_at).num_seconds() < 300 {
+                if let Some(session) = ensure_network_session(state.inner(), &info, false).await {
+                    let _ = app_handle.emit("network-session-update", &session);
+                }
                 return Ok(info);
             }
         }
@@ -504,6 +899,9 @@ async fn get_my_ip_info(
     // Update cache
     *state.ip_info.lock().await = Some(info.clone());
     *state.ip_info_last_check.lock().await = Some(Utc::now());
+    if let Some(session) = ensure_network_session(state.inner(), &info, false).await {
+        let _ = app_handle.emit("network-session-update", &session);
+    }
 
     Ok(info)
 }
@@ -598,7 +996,9 @@ fn should_send_vpn_notification(
 
 /// Get VPN protection settings
 #[tauri::command]
-async fn get_vpn_settings(state: State<'_, Arc<AppState>>) -> Result<VpnProtectionSettings, String> {
+async fn get_vpn_settings(
+    state: State<'_, Arc<AppState>>,
+) -> Result<VpnProtectionSettings, String> {
     let settings = state.vpn_settings.lock().await;
     Ok(settings.clone())
 }
@@ -615,7 +1015,9 @@ async fn set_vpn_settings(
 
 /// Get network stability info
 #[tauri::command]
-async fn get_network_stability(state: State<'_, Arc<AppState>>) -> Result<NetworkStability, String> {
+async fn get_network_stability(
+    state: State<'_, Arc<AppState>>,
+) -> Result<NetworkStability, String> {
     let stability = state.network_stability.lock().await;
     Ok(stability.clone())
 }
@@ -645,7 +1047,10 @@ async fn get_ping_interval(state: State<'_, Arc<AppState>>) -> Result<u32, Strin
 
 /// Set ping interval (in seconds, min 5, max 120)
 #[tauri::command]
-async fn set_ping_interval(interval_secs: u32, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+async fn set_ping_interval(
+    interval_secs: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     if interval_secs < 5 {
         return Err("Ping interval must be at least 5 seconds".to_string());
     }
@@ -653,6 +1058,24 @@ async fn set_ping_interval(interval_secs: u32, state: State<'_, Arc<AppState>>) 
         return Err("Ping interval must be at most 120 seconds".to_string());
     }
     *state.ping_interval_secs.lock().await = interval_secs;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_speed_test_duration(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
+    Ok(*state.speed_test_duration_secs.lock().await)
+}
+
+#[tauri::command]
+async fn set_speed_test_duration(
+    duration_secs: u32,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if !(3..=30).contains(&duration_secs) {
+        return Err("Speed test duration must be between 3 and 30 seconds".to_string());
+    }
+    *state.speed_test_duration_secs.lock().await = duration_secs;
+    save_history_async(state.inner()).await;
     Ok(())
 }
 
@@ -775,9 +1198,21 @@ async fn check_site(url: &str) -> SiteStatus {
 
     // Parse URL to extract host and port
     let (host, port) = if url.starts_with("https://") {
-        (url.trim_start_matches("https://").split('/').next().unwrap_or(url), 443)
+        (
+            url.trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap_or(url),
+            443,
+        )
     } else if url.starts_with("http://") {
-        (url.trim_start_matches("http://").split('/').next().unwrap_or(url), 80)
+        (
+            url.trim_start_matches("http://")
+                .split('/')
+                .next()
+                .unwrap_or(url),
+            80,
+        )
     } else {
         // Assume it's a hostname/IP, try HTTPS first
         (url.split('/').next().unwrap_or(url), 443)
@@ -880,11 +1315,6 @@ async fn check_all_sites(app_handle: &AppHandle, state: &Arc<AppState>) -> bool 
 async fn check_ip_change(app_handle: &AppHandle, state: &Arc<AppState>) {
     let settings = state.vpn_settings.lock().await.clone();
 
-    // Skip if VPN protection is disabled
-    if !settings.enabled {
-        return;
-    }
-
     // Fetch current IP (bypass cache)
     if let Ok(current) = fetch_ip_info_internal().await {
         let previous = state.ip_info.lock().await.clone();
@@ -925,7 +1355,8 @@ async fn check_ip_change(app_handle: &AppHandle, state: &Arc<AppState>) {
 
                 // Send notification for critical changes
                 let last_notif = *state.last_vpn_notification.lock().await;
-                if should_send_vpn_notification(&change, &settings, last_notif) {
+                if settings.enabled && should_send_vpn_notification(&change, &settings, last_notif)
+                {
                     let (title, body) = match change.change_type {
                         NetworkChangeType::CountryChanged => (
                             "VPN Alert: Location Changed!",
@@ -938,7 +1369,10 @@ async fn check_ip_change(app_handle: &AppHandle, state: &Arc<AppState>) {
                             "Network: IP Changed",
                             format!("Your IP address changed to {}", current.ip),
                         ),
-                        _ => ("Network Change", "Network configuration changed".to_string()),
+                        _ => (
+                            "Network Change",
+                            "Network configuration changed".to_string(),
+                        ),
                     };
 
                     let _ = app_handle
@@ -951,6 +1385,10 @@ async fn check_ip_change(app_handle: &AppHandle, state: &Arc<AppState>) {
                     *state.last_vpn_notification.lock().await = Some(Utc::now());
                 }
             }
+        }
+
+        if let Some(session) = ensure_network_session(state, &current, false).await {
+            let _ = app_handle.emit("network-session-update", &session);
         }
 
         // Update current IP state
@@ -1032,19 +1470,40 @@ struct TrayIcons {
 
 /// Save history to disk asynchronously (non-blocking)
 async fn save_history_async(state: &Arc<AppState>) {
-    let history = state.ping_history.lock().await.clone();
-    let targets = state.targets.lock().await.clone();
-    let primary = state.primary_target.lock().await.clone();
-    let site_monitors = state.site_monitors.lock().await.clone();
-    let vpn_settings = state.vpn_settings.lock().await.clone();
-    let ping_interval = *state.ping_interval_secs.lock().await;
+    let data = SavedData {
+        history: state.ping_history.lock().await.clone(),
+        targets: state.targets.lock().await.clone(),
+        primary_target: state.primary_target.lock().await.clone(),
+        notification_threshold_ms: *state.notification_threshold_ms.lock().await,
+        site_monitors: state.site_monitors.lock().await.clone(),
+        vpn_settings: state.vpn_settings.lock().await.clone(),
+        ping_interval_secs: *state.ping_interval_secs.lock().await,
+        speed_test_duration_secs: *state.speed_test_duration_secs.lock().await,
+        network_sessions: state.network_sessions.lock().await.clone(),
+        network_aliases: state.network_aliases.lock().await.clone(),
+        speed_tests: state.speed_tests.lock().await.clone(),
+    };
 
     // Spawn blocking file I/O in a separate thread to not block async runtime
     let _ = tokio::task::spawn_blocking(move || {
         // Ignore error - can't send Box<dyn Error> across threads
-        let _ = save_history(&history, &targets, &primary, &site_monitors, &vpn_settings, ping_interval);
+        let _ = save_history(&data);
     })
     .await;
+}
+
+/// Persist current state and exit after the native menu callback has returned.
+fn request_app_exit(app: &AppHandle) {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    if state.shutdown_requested.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        save_history_async(&state).await;
+        app.exit(0);
+    });
 }
 
 /// Unified background service - consolidates ping, site monitoring, and VPN check into ONE timer
@@ -1074,10 +1533,22 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
 
             tick_count += 1;
 
+            if state
+                .start_new_session_after_wake
+                .swap(false, Ordering::SeqCst)
+            {
+                if let Some(info) = state.ip_info.lock().await.clone() {
+                    if let Some(session) = ensure_network_session(&state, &info, true).await {
+                        let _ = app_handle.emit("network-session-update", &session);
+                    }
+                }
+            }
+
             // === PING (every tick) ===
             {
                 let targets = state.targets.lock().await.clone();
                 let primary_target = state.primary_target.lock().await.clone();
+                let session_id = state.current_session_id.lock().await.clone();
 
                 for target in &targets {
                     let (latency_ms, method) = do_ping(target).await;
@@ -1087,6 +1558,7 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
                         latency_ms,
                         target: target.clone(),
                         method,
+                        session_id: session_id.clone(),
                     };
 
                     {
@@ -1095,8 +1567,11 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
                             .entry(target.clone())
                             .or_insert_with(|| VecDeque::with_capacity(1000));
                         target_history.push_back(result.clone());
-                        // Keep 24 hours worth (varies by interval, use conservative estimate)
-                        while target_history.len() > 8640 {
+                        let cutoff = Utc::now() - chrono::Duration::hours(24);
+                        while target_history
+                            .front()
+                            .is_some_and(|oldest| oldest.timestamp < cutoff)
+                        {
                             target_history.pop_front();
                         }
                     }
@@ -1122,7 +1597,13 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
                             };
 
                             let mut last_state = state.last_tray_state.lock().await;
-                            update_tray_if_changed(&tray, &new_state, &mut last_state, &display_mode, &icons);
+                            update_tray_if_changed(
+                                &tray,
+                                &new_state,
+                                &mut last_state,
+                                &display_mode,
+                                &icons,
+                            );
                         }
                     }
 
@@ -1207,49 +1688,110 @@ struct SavedData {
     vpn_settings: VpnProtectionSettings,
     #[serde(default = "default_ping_interval")]
     ping_interval_secs: u32,
+    #[serde(default = "default_speed_test_duration")]
+    speed_test_duration_secs: u32,
+    #[serde(default)]
+    network_sessions: VecDeque<NetworkSession>,
+    #[serde(default)]
+    network_aliases: HashMap<String, String>,
+    #[serde(default)]
+    speed_tests: VecDeque<SpeedTestResult>,
 }
 
 fn default_ping_interval() -> u32 {
     10
 }
 
+fn default_speed_test_duration() -> u32 {
+    7
+}
+
 /// Save history to disk
-fn save_history(
-    history: &HashMap<String, VecDeque<PingResult>>,
-    targets: &[String],
-    primary_target: &str,
-    site_monitors: &[SiteMonitor],
-    vpn_settings: &VpnProtectionSettings,
-    ping_interval_secs: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn save_history(data: &SavedData) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(data_dir) = dirs::data_dir() {
         let app_dir = data_dir.join("pingzilla");
         std::fs::create_dir_all(&app_dir)?;
         let file_path = app_dir.join("history_v2.json");
-        let data = SavedData {
-            history: history.clone(),
-            targets: targets.to_vec(),
-            primary_target: primary_target.to_string(),
-            notification_threshold_ms: 400,
-            site_monitors: site_monitors.to_vec(),
-            vpn_settings: vpn_settings.clone(),
-            ping_interval_secs,
-        };
         let json = serde_json::to_string(&data)?;
         std::fs::write(file_path, json)?;
     }
     Ok(())
 }
 
+type LoadedData = (
+    HashMap<String, VecDeque<PingResult>>,
+    Vec<String>,
+    String,
+    Vec<SiteMonitor>,
+    VpnProtectionSettings,
+    u32,
+    VecDeque<NetworkSession>,
+    HashMap<String, String>,
+    VecDeque<SpeedTestResult>,
+    u32,
+);
+
+fn attach_legacy_session(
+    history: &mut HashMap<String, VecDeque<PingResult>>,
+    sessions: &mut VecDeque<NetworkSession>,
+) {
+    let legacy_pings: Vec<DateTime<Utc>> = history
+        .values()
+        .flat_map(|pings| pings.iter())
+        .filter(|ping| ping.session_id.is_none())
+        .map(|ping| ping.timestamp)
+        .collect();
+    let Some(started_at) = legacy_pings.iter().min().copied() else {
+        return;
+    };
+    let ended_at = legacy_pings.iter().max().copied();
+    let legacy_id = "session-legacy-unknown".to_string();
+
+    if !sessions.iter().any(|session| session.id == legacy_id) {
+        sessions.push_front(NetworkSession {
+            id: legacy_id.clone(),
+            fingerprint: "legacy-unknown".to_string(),
+            public_ip: "Unknown".to_string(),
+            isp: None,
+            label: Some("Unknown previous connection".to_string()),
+            started_at,
+            ended_at,
+        });
+    }
+    for ping in history.values_mut().flat_map(|pings| pings.iter_mut()) {
+        if ping.session_id.is_none() {
+            ping.session_id = Some(legacy_id.clone());
+        }
+    }
+}
+
+fn close_open_sessions_at_last_ping(
+    history: &HashMap<String, VecDeque<PingResult>>,
+    sessions: &mut VecDeque<NetworkSession>,
+) {
+    for session in sessions
+        .iter_mut()
+        .filter(|session| session.ended_at.is_none())
+    {
+        let last_ping = history
+            .values()
+            .flat_map(|pings| pings.iter())
+            .filter(|ping| ping.session_id.as_deref() == Some(session.id.as_str()))
+            .map(|ping| ping.timestamp)
+            .max();
+        session.ended_at = Some(last_ping.unwrap_or(session.started_at));
+    }
+}
+
 /// Load history from disk
-fn load_history() -> (HashMap<String, VecDeque<PingResult>>, Vec<String>, String, Vec<SiteMonitor>, VpnProtectionSettings, u32) {
+fn load_history() -> LoadedData {
     if let Some(data_dir) = dirs::data_dir() {
         // Try new format first
         let file_path_v2 = data_dir.join("pingzilla").join("history_v2.json");
         if let Ok(json) = std::fs::read_to_string(&file_path_v2) {
             if let Ok(data) = serde_json::from_str::<SavedData>(&json) {
                 let cutoff = Utc::now() - chrono::Duration::hours(24);
-                let filtered_history: HashMap<String, VecDeque<PingResult>> = data
+                let mut filtered_history: HashMap<String, VecDeque<PingResult>> = data
                     .history
                     .into_iter()
                     .map(|(target, pings)| {
@@ -1258,7 +1800,33 @@ fn load_history() -> (HashMap<String, VecDeque<PingResult>>, Vec<String>, String
                         (target, filtered)
                     })
                     .collect();
-                return (filtered_history, data.targets, data.primary_target, data.site_monitors, data.vpn_settings, data.ping_interval_secs);
+                let mut sessions: VecDeque<NetworkSession> = data
+                    .network_sessions
+                    .into_iter()
+                    .filter(|session| {
+                        session.ended_at.is_none()
+                            || session.ended_at.unwrap_or(session.started_at) > cutoff
+                    })
+                    .collect();
+                attach_legacy_session(&mut filtered_history, &mut sessions);
+                close_open_sessions_at_last_ping(&filtered_history, &mut sessions);
+                let speed_tests = data
+                    .speed_tests
+                    .into_iter()
+                    .filter(|test| test.timestamp > cutoff)
+                    .collect();
+                return (
+                    filtered_history,
+                    data.targets,
+                    data.primary_target,
+                    data.site_monitors,
+                    data.vpn_settings,
+                    data.ping_interval_secs,
+                    sessions,
+                    data.network_aliases,
+                    speed_tests,
+                    data.speed_test_duration_secs,
+                );
             }
         }
 
@@ -1277,14 +1845,38 @@ fn load_history() -> (HashMap<String, VecDeque<PingResult>>, Vec<String>, String
                     .unwrap_or_else(|| "1.1.1.1".to_string());
                 let mut map = HashMap::new();
                 map.insert(target.clone(), filtered);
-                return (map, vec![target.clone()], target, Vec::new(), VpnProtectionSettings::default(), 10);
+                let mut sessions = VecDeque::new();
+                attach_legacy_session(&mut map, &mut sessions);
+                return (
+                    map,
+                    vec![target.clone()],
+                    target,
+                    Vec::new(),
+                    VpnProtectionSettings::default(),
+                    10,
+                    sessions,
+                    HashMap::new(),
+                    VecDeque::new(),
+                    default_speed_test_duration(),
+                );
             }
         }
     }
 
     let mut history = HashMap::new();
     history.insert("1.1.1.1".to_string(), VecDeque::new());
-    (history, vec!["1.1.1.1".to_string()], "1.1.1.1".to_string(), Vec::new(), VpnProtectionSettings::default(), 10)
+    (
+        history,
+        vec!["1.1.1.1".to_string()],
+        "1.1.1.1".to_string(),
+        Vec::new(),
+        VpnProtectionSettings::default(),
+        10,
+        VecDeque::new(),
+        HashMap::new(),
+        VecDeque::new(),
+        default_speed_test_duration(),
+    )
 }
 
 /// Register for macOS sleep/wake notifications to pause background service during sleep
@@ -1320,6 +1912,9 @@ fn register_sleep_wake_observer(state: Arc<AppState>) {
             state_wake
                 .is_system_sleeping
                 .store(false, std::sync::atomic::Ordering::Relaxed);
+            state_wake
+                .start_new_session_after_wake
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             // Wake up the background service that's waiting
             wake_notify.notify_waiters();
         });
@@ -1385,21 +1980,33 @@ fn build_initial_menu(app: &AppHandle) -> Result<Menu<Wry>, tauri::Error> {
     let separator1 = PredefinedMenuItem::separator(app)?;
     let ip_item = MenuItem::with_id(app, "ip", "📍 IP: Loading...", true, None::<&str>)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
-    let dashboard = MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
+    let dashboard =
+        MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
     let separator3 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit PingZilla", true, None::<&str>)?;
 
-    Menu::with_items(app, &[
-        &ping_item, &target_item, &stats_item, &separator1,
-        &ip_item, &separator2,
-        &dashboard, &separator3,
-        &quit,
-    ])
+    Menu::with_items(
+        app,
+        &[
+            &ping_item,
+            &target_item,
+            &stats_item,
+            &separator1,
+            &ip_item,
+            &separator2,
+            &dashboard,
+            &separator3,
+            &quit,
+        ],
+    )
 }
 
 /// Build dynamic menu with current ping data
 /// Called after each ping to update the menu with latest info
-async fn build_dynamic_menu(app: &AppHandle, state: &Arc<AppState>) -> Result<Menu<Wry>, tauri::Error> {
+async fn build_dynamic_menu(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+) -> Result<Menu<Wry>, tauri::Error> {
     // Get current data
     let primary_target = state.primary_target.lock().await.clone();
     let ip_info = state.ip_info.lock().await.clone();
@@ -1439,24 +2046,48 @@ async fn build_dynamic_menu(app: &AppHandle, state: &Arc<AppState>) -> Result<Me
     let (ping_text, status_icon) = match &current_ping {
         Some(p) => match p.latency_ms {
             Some(ms) => {
-                let icon = if ms < 100.0 { "🟢" } else if ms < 150.0 { "🟡" } else { "🔴" };
+                let icon = if ms < 100.0 {
+                    "🟢"
+                } else if ms < 150.0 {
+                    "🟡"
+                } else {
+                    "🔴"
+                };
                 (format!("{:.0}ms", ms), icon)
-            },
+            }
             None => ("Timeout".to_string(), "⚫"),
         },
         None => ("---".to_string(), "⚪"),
     };
-    let ping_item = MenuItem::with_id(app, "ping", &format!("{} Ping: {}", status_icon, ping_text), true, None::<&str>)?;
+    let ping_item = MenuItem::with_id(
+        app,
+        "ping",
+        &format!("{} Ping: {}", status_icon, ping_text),
+        true,
+        None::<&str>,
+    )?;
 
     // Target line
-    let target_item = MenuItem::with_id(app, "target", &format!("   → {}", primary_target), true, None::<&str>)?;
+    let target_item = MenuItem::with_id(
+        app,
+        "target",
+        &format!("   → {}", primary_target),
+        true,
+        None::<&str>,
+    )?;
 
     // Stats - more compact
     let stats_text = format!(
         "   ↓{} · ~{} · ↑{}",
-        min_ms.map(|v| format!("{:.0}ms", v)).unwrap_or_else(|| "--".to_string()),
-        avg_ms.map(|v| format!("{:.0}ms", v)).unwrap_or_else(|| "--".to_string()),
-        max_ms.map(|v| format!("{:.0}ms", v)).unwrap_or_else(|| "--".to_string())
+        min_ms
+            .map(|v| format!("{:.0}ms", v))
+            .unwrap_or_else(|| "--".to_string()),
+        avg_ms
+            .map(|v| format!("{:.0}ms", v))
+            .unwrap_or_else(|| "--".to_string()),
+        max_ms
+            .map(|v| format!("{:.0}ms", v))
+            .unwrap_or_else(|| "--".to_string())
     );
     let stats_item = MenuItem::with_id(app, "stats", &stats_text, true, None::<&str>)?;
 
@@ -1491,17 +2122,22 @@ async fn build_dynamic_menu(app: &AppHandle, state: &Arc<AppState>) -> Result<Me
 
         for (url, status) in site_statuses.iter().take(5) {
             let icon = if status.is_up { "✅" } else { "❌" };
-            let latency = status.latency_ms.map(|ms| format!("({}ms)", ms as i32)).unwrap_or_default();
+            let latency = status
+                .latency_ms
+                .map(|ms| format!("({}ms)", ms as i32))
+                .unwrap_or_default();
             let site_name = shorten_url(url);
             let text = format!("  {} {} {}", icon, site_name, latency);
-            let site_item = MenuItem::with_id(app, &format!("site_{}", url), &text, true, None::<&str>)?;
+            let site_item =
+                MenuItem::with_id(app, &format!("site_{}", url), &text, true, None::<&str>)?;
             menu_items.push(Box::new(site_item));
         }
     }
 
     // Action items
     let separator3 = PredefinedMenuItem::separator(app)?;
-    let dashboard = MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
+    let dashboard =
+        MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
     let separator4 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit PingZilla", true, None::<&str>)?;
 
@@ -1511,7 +2147,8 @@ async fn build_dynamic_menu(app: &AppHandle, state: &Arc<AppState>) -> Result<Me
     menu_items.push(Box::new(quit));
 
     // Build the menu
-    let item_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = menu_items.iter().map(|b| b.as_ref()).collect();
+    let item_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
+        menu_items.iter().map(|b| b.as_ref()).collect();
     Menu::with_items(app, &item_refs)
 }
 
@@ -1529,7 +2166,7 @@ fn open_dashboard_window(app: &AppHandle) {
     if let Ok(window) = tauri::WebviewWindowBuilder::new(
         app,
         "dashboard",
-        tauri::WebviewUrl::App("index.html".into())
+        tauri::WebviewUrl::App("index.html".into()),
     )
     .title("PingZilla")
     .inner_size(400.0, 600.0)
@@ -1551,9 +2188,160 @@ fn open_dashboard_window(app: &AppHandle) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_pings_are_migrated_to_an_unknown_session() {
+        let timestamp = Utc::now();
+        let mut history = HashMap::from([(
+            "1.1.1.1".to_string(),
+            VecDeque::from([PingResult {
+                timestamp,
+                latency_ms: Some(42.0),
+                target: "1.1.1.1".to_string(),
+                method: Some(PingMethod::Icmp),
+                session_id: None,
+            }]),
+        )]);
+        let mut sessions = VecDeque::new();
+
+        attach_legacy_session(&mut history, &mut sessions);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            history["1.1.1.1"][0].session_id.as_deref(),
+            Some("session-legacy-unknown")
+        );
+        assert_eq!(
+            sessions[0].label.as_deref(),
+            Some("Unknown previous connection")
+        );
+    }
+
+    #[test]
+    fn percentile_uses_nearest_rank() {
+        let values = [10.0, 20.0, 30.0, 40.0, 50.0];
+        assert_eq!(percentile(&values, 0.95), Some(50.0));
+        assert_eq!(percentile(&values, 0.5), Some(30.0));
+        assert_eq!(percentile(&[], 0.95), None);
+    }
+
+    #[test]
+    fn speed_test_latency_uses_array_median() {
+        let raw = serde_json::json!({
+            "lud_self_h2_req_resp": [900.0, 100.0, 500.0, 300.0]
+        });
+        assert_eq!(median_json_array(&raw, "lud_self_h2_req_resp"), Some(400.0));
+    }
+
+    #[test]
+    fn public_ip_and_isp_form_the_network_fingerprint() {
+        let info = IpInfo {
+            ip: "203.0.113.1".to_string(),
+            country: "United States".to_string(),
+            country_code: "US".to_string(),
+            city: None,
+            isp: Some("Example ISP".to_string()),
+        };
+        assert_eq!(network_fingerprint(&info), "203.0.113.1|Example ISP");
+    }
+
+    #[test]
+    fn persisted_open_session_closes_at_its_last_ping() {
+        let timestamp = Utc::now();
+        let session_id = "session-current".to_string();
+        let history = HashMap::from([(
+            "1.1.1.1".to_string(),
+            VecDeque::from([PingResult {
+                timestamp,
+                latency_ms: Some(42.0),
+                target: "1.1.1.1".to_string(),
+                method: Some(PingMethod::Icmp),
+                session_id: Some(session_id.clone()),
+            }]),
+        )]);
+        let mut sessions = VecDeque::from([NetworkSession {
+            id: session_id,
+            fingerprint: "203.0.113.1|Example ISP".to_string(),
+            public_ip: "203.0.113.1".to_string(),
+            isp: Some("Example ISP".to_string()),
+            label: None,
+            started_at: timestamp - chrono::Duration::minutes(5),
+            ended_at: None,
+        }]);
+
+        close_open_sessions_at_last_ping(&history, &mut sessions);
+
+        assert_eq!(sessions[0].ended_at, Some(timestamp));
+    }
+
+    #[test]
+    fn saved_history_without_speed_duration_defaults_to_seven_seconds() {
+        let saved: SavedData = serde_json::from_value(serde_json::json!({
+            "history": {},
+            "targets": ["1.1.1.1"],
+            "primary_target": "1.1.1.1",
+            "notification_threshold_ms": 400
+        }))
+        .expect("legacy saved data should deserialize");
+
+        assert_eq!(saved.speed_test_duration_secs, 7);
+    }
+
+    #[tokio::test]
+    async fn initial_session_claims_recent_startup_pings() {
+        let state = Arc::new(AppState::default());
+        state
+            .ping_history
+            .lock()
+            .await
+            .get_mut("1.1.1.1")
+            .expect("default target history")
+            .push_back(PingResult {
+                timestamp: Utc::now(),
+                latency_ms: Some(42.0),
+                target: "1.1.1.1".to_string(),
+                method: Some(PingMethod::Icmp),
+                session_id: None,
+            });
+        let info = IpInfo {
+            ip: "203.0.113.1".to_string(),
+            country: "United States".to_string(),
+            country_code: "US".to_string(),
+            city: None,
+            isp: Some("Example ISP".to_string()),
+        };
+
+        let session = ensure_network_session(&state, &info, false)
+            .await
+            .expect("initial session");
+
+        assert_eq!(
+            state.ping_history.lock().await["1.1.1.1"][0]
+                .session_id
+                .as_deref(),
+            Some(session.id.as_str())
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (loaded_history, loaded_targets, loaded_primary, loaded_site_monitors, loaded_vpn_settings, loaded_ping_interval) = load_history();
+    let (
+        loaded_history,
+        loaded_targets,
+        loaded_primary,
+        loaded_site_monitors,
+        loaded_vpn_settings,
+        loaded_ping_interval,
+        loaded_network_sessions,
+        loaded_network_aliases,
+        loaded_speed_tests,
+        loaded_speed_test_duration,
+    ) = load_history();
+    let loaded_current_session = None;
 
     let app_state = Arc::new(AppState {
         ping_history: Mutex::new(loaded_history),
@@ -1562,6 +2350,11 @@ pub fn run() {
         site_monitors: Mutex::new(loaded_site_monitors),
         vpn_settings: Mutex::new(loaded_vpn_settings),
         ping_interval_secs: Mutex::new(loaded_ping_interval),
+        network_sessions: Mutex::new(loaded_network_sessions),
+        current_session_id: Mutex::new(loaded_current_session),
+        network_aliases: Mutex::new(loaded_network_aliases),
+        speed_tests: Mutex::new(loaded_speed_tests),
+        speed_test_duration_secs: Mutex::new(loaded_speed_test_duration),
         ..Default::default()
     });
 
@@ -1576,6 +2369,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_current_ping,
             get_ping_history,
+            get_network_sessions,
+            get_speed_tests,
+            get_session_details,
+            rename_network_session,
+            run_speed_test,
             get_targets,
             add_target,
             remove_target,
@@ -1596,6 +2394,8 @@ pub fn run() {
             set_window_visible,
             get_ping_interval,
             set_ping_interval,
+            get_speed_test_duration,
+            set_speed_test_duration,
         ])
         .setup(move |app| {
             // Show in Dock - required for ping to work in sandboxed App Store builds
@@ -1616,12 +2416,10 @@ pub fn run() {
                 .tooltip("PingZilla - Network Monitor")
                 .menu(&initial_menu)
                 .show_menu_on_left_click(true) // Both left and right click show menu - works in fullscreen!
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "dashboard" => open_dashboard_window(app),
-                        "quit" => app.exit(0),
-                        _ => {}
-                    }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "dashboard" => open_dashboard_window(app),
+                    "quit" => request_app_exit(app),
+                    _ => {}
                 })
                 .build(app)?;
 
