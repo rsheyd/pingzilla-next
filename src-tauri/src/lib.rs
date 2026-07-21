@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{
     image::Image,
@@ -235,6 +235,17 @@ pub enum TrayIconType {
     Transparent,
 }
 
+/// Stable handles for tray rows whose labels change as monitoring data arrives.
+/// Keeping these handles alive lets the background service update labels without
+/// replacing the native menu while AppKit may be processing a click.
+struct TrayMenuItems {
+    ping: MenuItem<Wry>,
+    target: MenuItem<Wry>,
+    stats: MenuItem<Wry>,
+    ip: MenuItem<Wry>,
+    sites: Vec<(String, MenuItem<Wry>)>,
+}
+
 /// Application state shared across the app
 pub struct AppState {
     pub ping_history: Mutex<HashMap<String, VecDeque<PingResult>>>,
@@ -255,6 +266,7 @@ pub struct AppState {
     pub last_vpn_notification: Mutex<Option<DateTime<Utc>>>,
     // Tray state cache to avoid unnecessary updates
     pub last_tray_state: Mutex<Option<TrayState>>,
+    tray_menu_items: StdMutex<Option<TrayMenuItems>>,
     // Battery optimization: sleep/wake and visibility tracking
     pub is_system_sleeping: AtomicBool,
     pub is_window_visible: AtomicBool,
@@ -296,6 +308,7 @@ impl Default for AppState {
             last_vpn_notification: Mutex::new(None),
             // Tray state cache
             last_tray_state: Mutex::new(None),
+            tray_menu_items: StdMutex::new(None),
             // Battery optimization defaults
             is_system_sleeping: AtomicBool::new(false),
             is_window_visible: AtomicBool::new(false),
@@ -1091,37 +1104,48 @@ async fn get_site_monitors(state: State<'_, Arc<AppState>>) -> Result<Vec<SiteMo
 async fn add_site_monitor(
     url: String,
     name: Option<String>,
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    let mut monitors = state.site_monitors.lock().await;
+    {
+        let mut monitors = state.site_monitors.lock().await;
 
-    if monitors.len() >= 10 {
-        return Err("Maximum of 10 site monitors allowed".to_string());
+        if monitors.len() >= 10 {
+            return Err("Maximum of 10 site monitors allowed".to_string());
+        }
+
+        if monitors.iter().any(|m| m.url == url) {
+            return Err("Site already being monitored".to_string());
+        }
+
+        monitors.push(SiteMonitor {
+            url,
+            name,
+            enabled: true,
+        });
     }
 
-    if monitors.iter().any(|m| m.url == url) {
-        return Err("Site already being monitored".to_string());
-    }
-
-    monitors.push(SiteMonitor {
-        url,
-        name,
-        enabled: true,
-    });
-
-    Ok(())
+    rebuild_tray_menu(&app, state.inner()).await
 }
 
 /// Remove a site monitor
 #[tauri::command]
-async fn remove_site_monitor(url: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut monitors = state.site_monitors.lock().await;
-    monitors.retain(|m| m.url != url);
+async fn remove_site_monitor(
+    url: String,
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    {
+        let mut monitors = state.site_monitors.lock().await;
+        monitors.retain(|m| m.url != url);
+    }
 
-    let mut statuses = state.site_statuses.lock().await;
-    statuses.remove(&url);
+    {
+        let mut statuses = state.site_statuses.lock().await;
+        statuses.remove(&url);
+    }
 
-    Ok(())
+    rebuild_tray_menu(&app, state.inner()).await
 }
 
 /// Get current site statuses
@@ -1609,13 +1633,9 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
 
                     let _ = app_handle.emit("ping-update", &result);
 
-                    // Rebuild the tray menu with current data (for native menu display)
+                    // Update stable native menu items without replacing the menu.
                     if target == &primary_target {
-                        if let Some(tray) = app_handle.tray_by_id("main-tray") {
-                            if let Ok(menu) = build_dynamic_menu(&app_handle, &state).await {
-                                let _ = tray.set_menu(Some(menu));
-                            }
-                        }
+                        update_tray_menu_items(&state).await;
                     }
 
                     // Notifications for primary target only
@@ -1972,41 +1992,79 @@ fn shorten_url(url: &str) -> String {
         .to_string()
 }
 
-/// Build initial menu structure (before any ping data is available)
-fn build_initial_menu(app: &AppHandle) -> Result<Menu<Wry>, tauri::Error> {
+/// Build the tray menu and return stable handles for rows updated in place.
+fn build_tray_menu(
+    app: &AppHandle,
+    site_monitors: &[SiteMonitor],
+) -> Result<(Menu<Wry>, TrayMenuItems), tauri::Error> {
     let ping_item = MenuItem::with_id(app, "ping", "⚪ Ping: ---", true, None::<&str>)?;
     let target_item = MenuItem::with_id(app, "target", "   → loading...", true, None::<&str>)?;
     let stats_item = MenuItem::with_id(app, "stats", "   ↓-- · ~-- · ↑--", true, None::<&str>)?;
     let separator1 = PredefinedMenuItem::separator(app)?;
     let ip_item = MenuItem::with_id(app, "ip", "📍 IP: Loading...", true, None::<&str>)?;
-    let separator2 = PredefinedMenuItem::separator(app)?;
+    let mut menu_items: Vec<Box<dyn tauri::menu::IsMenuItem<Wry>>> = vec![
+        Box::new(ping_item.clone()),
+        Box::new(target_item.clone()),
+        Box::new(stats_item.clone()),
+        Box::new(separator1),
+        Box::new(ip_item.clone()),
+    ];
+    let mut site_items = Vec::new();
+
+    let visible_monitors: Vec<_> = site_monitors
+        .iter()
+        .filter(|monitor| monitor.enabled)
+        .take(5)
+        .collect();
+    if !visible_monitors.is_empty() {
+        menu_items.push(Box::new(PredefinedMenuItem::separator(app)?));
+        menu_items.push(Box::new(MenuItem::with_id(
+            app,
+            "sites_header",
+            "🌐 Sites:",
+            true,
+            None::<&str>,
+        )?));
+
+        for monitor in visible_monitors {
+            let item = MenuItem::with_id(
+                app,
+                &format!("site_{}", monitor.url),
+                &format!("  ⏳ {}", shorten_url(&monitor.url)),
+                true,
+                None::<&str>,
+            )?;
+            menu_items.push(Box::new(item.clone()));
+            site_items.push((monitor.url.clone(), item));
+        }
+    }
+
+    menu_items.push(Box::new(PredefinedMenuItem::separator(app)?));
     let dashboard =
         MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
-    let separator3 = PredefinedMenuItem::separator(app)?;
+    menu_items.push(Box::new(dashboard));
+    menu_items.push(Box::new(PredefinedMenuItem::separator(app)?));
     let quit = MenuItem::with_id(app, "quit", "Quit PingZilla", true, None::<&str>)?;
+    menu_items.push(Box::new(quit));
 
-    Menu::with_items(
-        app,
-        &[
-            &ping_item,
-            &target_item,
-            &stats_item,
-            &separator1,
-            &ip_item,
-            &separator2,
-            &dashboard,
-            &separator3,
-            &quit,
-        ],
-    )
+    let item_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
+        menu_items.iter().map(|item| item.as_ref()).collect();
+    let menu = Menu::with_items(app, &item_refs)?;
+
+    Ok((
+        menu,
+        TrayMenuItems {
+            ping: ping_item,
+            target: target_item,
+            stats: stats_item,
+            ip: ip_item,
+            sites: site_items,
+        },
+    ))
 }
 
-/// Build dynamic menu with current ping data
-/// Called after each ping to update the menu with latest info
-async fn build_dynamic_menu(
-    app: &AppHandle,
-    state: &Arc<AppState>,
-) -> Result<Menu<Wry>, tauri::Error> {
+/// Update dynamic tray labels while preserving the native menu and its items.
+async fn update_tray_menu_items(state: &Arc<AppState>) {
     // Get current data
     let primary_target = state.primary_target.lock().await.clone();
     let ip_info = state.ip_info.lock().await.clone();
@@ -2059,22 +2117,8 @@ async fn build_dynamic_menu(
         },
         None => ("---".to_string(), "⚪"),
     };
-    let ping_item = MenuItem::with_id(
-        app,
-        "ping",
-        &format!("{} Ping: {}", status_icon, ping_text),
-        true,
-        None::<&str>,
-    )?;
-
-    // Target line
-    let target_item = MenuItem::with_id(
-        app,
-        "target",
-        &format!("   → {}", primary_target),
-        true,
-        None::<&str>,
-    )?;
+    let ping_text = format!("{} Ping: {}", status_icon, ping_text);
+    let target_text = format!("   → {}", primary_target);
 
     // Stats - more compact
     let stats_text = format!(
@@ -2089,11 +2133,6 @@ async fn build_dynamic_menu(
             .map(|v| format!("{:.0}ms", v))
             .unwrap_or_else(|| "--".to_string())
     );
-    let stats_item = MenuItem::with_id(app, "stats", &stats_text, true, None::<&str>)?;
-
-    let separator1 = PredefinedMenuItem::separator(app)?;
-
-    // IP info
     let ip_text = match ip_info {
         Some(info) => {
             let flag = country_to_flag(&info.country_code);
@@ -2101,55 +2140,46 @@ async fn build_dynamic_menu(
         }
         None => "📍 IP: Loading...".to_string(),
     };
-    let ip_item = MenuItem::with_id(app, "ip", &ip_text, true, None::<&str>)?;
+    if let Ok(items) = state.tray_menu_items.lock() {
+        if let Some(items) = items.as_ref() {
+            let _ = items.ping.set_text(ping_text);
+            let _ = items.target.set_text(target_text);
+            let _ = items.stats.set_text(stats_text);
+            let _ = items.ip.set_text(ip_text);
 
-    // Site monitors section
-    let mut menu_items: Vec<Box<dyn tauri::menu::IsMenuItem<Wry>>> = vec![
-        Box::new(ping_item),
-        Box::new(target_item),
-        Box::new(stats_item),
-        Box::new(separator1),
-        Box::new(ip_item),
-    ];
-
-    // Add site monitors if any
-    if !site_statuses.is_empty() {
-        let sites_sep = PredefinedMenuItem::separator(app)?;
-        menu_items.push(Box::new(sites_sep));
-
-        let sites_header = MenuItem::with_id(app, "sites_header", "🌐 Sites:", true, None::<&str>)?;
-        menu_items.push(Box::new(sites_header));
-
-        for (url, status) in site_statuses.iter().take(5) {
-            let icon = if status.is_up { "✅" } else { "❌" };
-            let latency = status
-                .latency_ms
-                .map(|ms| format!("({}ms)", ms as i32))
-                .unwrap_or_default();
-            let site_name = shorten_url(url);
-            let text = format!("  {} {} {}", icon, site_name, latency);
-            let site_item =
-                MenuItem::with_id(app, &format!("site_{}", url), &text, true, None::<&str>)?;
-            menu_items.push(Box::new(site_item));
+            for (url, item) in &items.sites {
+                let text = match site_statuses.get(url) {
+                    Some(status) => {
+                        let icon = if status.is_up { "✅" } else { "❌" };
+                        let latency = status
+                            .latency_ms
+                            .map(|ms| format!("({}ms)", ms as i32))
+                            .unwrap_or_default();
+                        format!("  {} {} {}", icon, shorten_url(url), latency)
+                    }
+                    None => format!("  ⏳ {}", shorten_url(url)),
+                };
+                let _ = item.set_text(text);
+            }
         }
     }
+}
 
-    // Action items
-    let separator3 = PredefinedMenuItem::separator(app)?;
-    let dashboard =
-        MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
-    let separator4 = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit PingZilla", true, None::<&str>)?;
-
-    menu_items.push(Box::new(separator3));
-    menu_items.push(Box::new(dashboard));
-    menu_items.push(Box::new(separator4));
-    menu_items.push(Box::new(quit));
-
-    // Build the menu
-    let item_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
-        menu_items.iter().map(|b| b.as_ref()).collect();
-    Menu::with_items(app, &item_refs)
+/// Rebuild only when the configured monitor list changes structurally.
+async fn rebuild_tray_menu(app: &AppHandle, state: &Arc<AppState>) -> Result<(), String> {
+    let monitors = state.site_monitors.lock().await.clone();
+    let (menu, items) = build_tray_menu(app, &monitors).map_err(|error| error.to_string())?;
+    let tray = app
+        .tray_by_id("main-tray")
+        .ok_or_else(|| "Tray icon is unavailable".to_string())?;
+    tray.set_menu(Some(menu))
+        .map_err(|error| error.to_string())?;
+    *state
+        .tray_menu_items
+        .lock()
+        .map_err(|_| "Tray menu state is unavailable".to_string())? = Some(items);
+    update_tray_menu_items(state).await;
+    Ok(())
 }
 
 /// Open dashboard window with full React UI (graph, stats, etc.)
@@ -2342,6 +2372,7 @@ pub fn run() {
         loaded_speed_test_duration,
     ) = load_history();
     let loaded_current_session = None;
+    let initial_site_monitors = loaded_site_monitors.clone();
 
     let app_state = Arc::new(AppState {
         ping_history: Mutex::new(loaded_history),
@@ -2402,8 +2433,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-            // Build initial menu (will be updated dynamically on each ping)
-            let initial_menu = build_initial_menu(app.handle())?;
+            // Build the menu once; monitoring updates mutate stable item labels.
+            let (initial_menu, initial_menu_items) =
+                build_tray_menu(app.handle(), &initial_site_monitors)?;
 
             // Start with happy Godzilla icon (will update based on ping latency)
             let icon_bytes = include_bytes!("../icons/pingzilla_happy.png");
@@ -2422,6 +2454,10 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+
+            if let Ok(mut items) = app_state.tray_menu_items.lock() {
+                *items = Some(initial_menu_items);
+            }
 
             // Battery optimization: register for sleep/wake notifications
             // App Nap is allowed - macOS will manage power normally
