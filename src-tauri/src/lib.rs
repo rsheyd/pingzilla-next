@@ -2429,9 +2429,11 @@ pub fn run() {
             set_speed_test_duration,
         ])
         .setup(move |app| {
-            // Show in Dock - required for ping to work in sandboxed App Store builds
+            // Keep this menu-bar app out of the Dock. Activation policy and sandbox
+            // network permissions are independent; the old Regular-policy requirement
+            // was likely a mistaken diagnosis or workaround for an earlier issue.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Build the menu once; monitoring updates mutate stable item labels.
             let (initial_menu, initial_menu_items) =
