@@ -1,6 +1,6 @@
-# Contributing to PingZilla Enhanced
+# Contributing to PingZilla Next
 
-- [Contributing to PingZilla Enhanced](#contributing-to-pingzilla-enhanced)
+- [Contributing to PingZilla Next](#contributing-to-pingzilla-next)
   - [Testing Changes on Your Mac](#testing-changes-on-your-mac)
   - [Which workflow should I use?](#which-workflow-should-i-use)
   - [Fast development workflow](#fast-development-workflow)
@@ -19,7 +19,7 @@ You do not need to uninstall the Mac App Store or `/Applications` copy of the or
 | Interactively test UI or Rust/backend behavior | `pnpm tauri dev` | No |
 | Reproduce installed-app behavior or test packaging, signing, sandboxing, entitlements, or a release candidate | `pnpm tauri build --bundles app` | Yes |
 
-For example, `pnpm tauri dev` is sufficient to test both the network-name pencil interaction and whether **Quit PingZilla Enhanced** exits cleanly. Since a Quit crash can depend on the native packaged runtime, also test a production bundle once before considering that fix release-ready. You do not need to rebuild the bundle after every small UI iteration.
+For example, `pnpm tauri dev` is sufficient to test both the network-name pencil interaction and whether **Quit PingZilla Next** exits cleanly. Since a Quit crash can depend on the native packaged runtime, also test a production bundle once before considering that fix release-ready. You do not need to rebuild the bundle after every small UI iteration.
 
 ## Fast development workflow
 
@@ -30,12 +30,12 @@ pnpm install
 pnpm tauri dev
 ```
 
-PingZilla Enhanced starts as a menu-bar app and may not open a window automatically. Click its menu-bar icon and choose **Open Dashboard…**.
+PingZilla Next starts as a menu-bar app and may not open a window automatically. Click its menu-bar icon and choose **Open Dashboard…**.
 
 Changes made while `pnpm tauri dev` is running rebuild automatically. When finished:
 
 1. Stop the development process with `Control-C` in Terminal.
-2. Quit the development PingZilla Enhanced instance if it remains open.
+2. Quit the development PingZilla Next instance if it remains open.
 3. Relaunch the installed version from `/Applications` if desired.
 
 ## Validation without launching the app
@@ -57,7 +57,7 @@ pnpm build
 
 ## Versioning
 
-The user-facing app version is the `version` value in `src-tauri/tauri.conf.json`. The `0.1.0` values in `package.json` and `src-tauri/Cargo.toml` identify the frontend and Rust packages; they are not the PingZilla Enhanced release version and do not normally need to change with an app release.
+The user-facing app version is the `version` value in `src-tauri/tauri.conf.json`. The `0.1.0` values in `package.json` and `src-tauri/Cargo.toml` identify the frontend and Rust packages; they are not the PingZilla Next release version and do not normally need to change with an app release.
 
 Use semantic versioning for release versions:
 
@@ -80,29 +80,29 @@ pnpm tauri build --bundles app
 The app is created at:
 
 ```text
-src-tauri/target/release/bundle/macos/PingZilla Enhanced.app
+src-tauri/target/release/bundle/macos/PingZilla Next.app
 ```
 
-For local sandbox testing, apply an ad-hoc signature with PingZilla Enhanced's entitlements:
+For local sandbox testing, apply an ad-hoc signature with PingZilla Next's entitlements:
 
 ```bash
 codesign --force --deep --sign - \
   --entitlements src-tauri/Entitlements.plist \
-  "src-tauri/target/release/bundle/macos/PingZilla Enhanced.app"
+  "src-tauri/target/release/bundle/macos/PingZilla Next.app"
 ```
 
-Quit any running copy of PingZilla or PingZilla Enhanced before testing the bundle so that two processes do not monitor and write history at the same time. To launch the bundle in place:
+Quit any running copy of PingZilla or PingZilla Next before testing the bundle so that two processes do not monitor and write history at the same time. To launch the bundle in place:
 
 ```bash
-open "src-tauri/target/release/bundle/macos/PingZilla Enhanced.app"
+open "src-tauri/target/release/bundle/macos/PingZilla Next.app"
 ```
 
 To install the local build in `/Applications`, sign it first using the command above. If an older copy is already installed, remove or replace that entire app bundle rather than merging files into it. Then copy and launch the new bundle:
 
 ```bash
-rm -rf "/Applications/PingZilla Enhanced.app"
-cp -R "src-tauri/target/release/bundle/macos/PingZilla Enhanced.app" /Applications/
-open "/Applications/PingZilla Enhanced.app"
+rm -rf "/Applications/PingZilla Next.app"
+cp -R "src-tauri/target/release/bundle/macos/PingZilla Next.app" /Applications/
+open "/Applications/PingZilla Next.app"
 ```
 
 Signing before copying preserves the completed bundle's signature; modifying files inside the app afterward invalidates it.

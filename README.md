@@ -1,16 +1,16 @@
-# PingZilla Enhanced
+# PingZilla Next
 
-> *An actively maintained, extended fork of PingZilla*
+> *A fast-moving edition of PingZilla*
 
 <p align="center">
-  <img src="src-tauri/icons/icon.png" width="128" alt="PingZilla Enhanced app icon">
+  <img src="src-tauri/icons/icon.png" width="128" alt="PingZilla Next app icon">
 </p>
 
-A lightweight macOS menu bar application that monitors network latency in real time. PingZilla Enhanced builds on the original PingZilla with longer-term history, network-session tracking, and additional diagnostics. It is built with Tauri 2, React, and Rust.
+A lightweight macOS menu bar application that monitors network latency in real time. PingZilla Next builds on the original PingZilla with longer-term history, network-session tracking, and additional diagnostics. It is built with Tauri 2, React, and Rust.
 
 ## About This Fork
 
-PingZilla Enhanced is an independently maintained fork of [PixelTowers/Pingzilla](https://github.com/PixelTowers/Pingzilla). It keeps the original project's lightweight menu bar experience while developing additional monitoring and troubleshooting features. Suitable improvements may continue to be proposed upstream.
+PingZilla Next is an unofficial, fast-moving edition of [PixelTowers/Pingzilla](https://github.com/PixelTowers/Pingzilla) where I develop and use new monitoring features. It keeps the original project's lightweight menu bar experience, and suitable changes may continue to be proposed upstream.
 
 ### What's Different?
 
@@ -21,21 +21,21 @@ PingZilla Enhanced is an independently maintained fork of [PixelTowers/Pingzilla
 - Historical graph segmentation, downsampling, and detailed point inspection
 - Ongoing fixes and usability improvements beyond the current upstream release
 
-## Why PingZilla Enhanced?
+## Why PingZilla Next?
 
 **For Remote Workers & Digital Nomads**
-> Working from a café in Lisbon? PingZilla Enhanced alerts you the moment your VPN drops, before your real IP gets exposed. See your current country right in the menu bar.
+> Working from a café in Lisbon? PingZilla Next alerts you the moment your VPN drops, before your real IP gets exposed. See your current country right in the menu bar.
 
 **For Gamers & Streamers**
-> That lag spike just cost you the match. PingZilla Enhanced lives in your menu bar showing real-time latency. Green means go, red means rage quit.
+> That lag spike just cost you the match. PingZilla Next lives in your menu bar showing real-time latency. Green means go, red means rage quit.
 
 **For Developers**
-> A menu bar ping monitor that doesn't eat your battery. Built with Tauri 2 and Rust, not another Electron memory hog. [Open source](https://github.com/rsheyd/pingzilla-enhanced).
+> A menu bar ping monitor that doesn't eat your battery. Built with Tauri 2 and Rust, not another Electron memory hog. [Open source](https://github.com/rsheyd/pingzilla-next).
 
 ## Features
 
 - **Live Menu Bar Display** - Current ping displayed right in your menu bar
-- **Dynamic Menu Bar Icons** - PingZilla Enhanced's mood changes based on latency:
+- **Dynamic Menu Bar Icons** - PingZilla Next's mood changes based on latency:
   - Happy (< 60ms) - Everything is great!
   - Angry (60-150ms) - Getting concerned...
   - Sad (> 150ms) - Network troubles!
@@ -59,7 +59,7 @@ PingZilla Enhanced is an independently maintained fork of [PixelTowers/Pingzilla
 
 ## Menu Bar Icons
 
-PingZilla Enhanced uses expressive icons to show network health at a glance:
+PingZilla Next uses expressive icons to show network health at a glance:
 
 | Icon | Latency | Mood |
 |------|---------|------|
@@ -71,21 +71,21 @@ PingZilla Enhanced uses expressive icons to show network health at a glance:
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/screenshot1.jpeg" width="800" alt="PingZilla Enhanced dashboard">
+  <img src="screenshots/screenshot1.jpeg" width="800" alt="PingZilla Next dashboard">
 </p>
 
 <p align="center">
-  <img src="screenshots/screenshot3.png" width="400" alt="PingZilla Enhanced popup">
-  <img src="screenshots/screenshot2.png" width="400" alt="PingZilla Enhanced menu bar">
+  <img src="screenshots/screenshot3.png" width="400" alt="PingZilla Next popup">
+  <img src="screenshots/screenshot2.png" width="400" alt="PingZilla Next menu bar">
 </p>
 
 ## Installation
 
 ### From Release
 
-Download the latest available build from the [Releases](https://github.com/rsheyd/pingzilla-enhanced/releases) page. If no packaged release is available for the version you want, build it from source below.
+Download the latest available build from the [Releases](https://github.com/rsheyd/pingzilla-next/releases) page. If no packaged release is available for the version you want, build it from source below.
 
-The original PingZilla is also available from the [Mac App Store](https://apps.apple.com/app/pingzilla/id6757017560). That listing is maintained by the upstream project and is not PingZilla Enhanced.
+The original PingZilla is also available from the [Mac App Store](https://apps.apple.com/app/pingzilla/id6757017560). That listing is maintained by the upstream project and is not PingZilla Next.
 
 ### Build from Source
 
@@ -100,8 +100,8 @@ The original PingZilla is also available from the [Mac App Store](https://apps.a
 
 ```bash
 # Clone the repo
-git clone https://github.com/rsheyd/pingzilla-enhanced.git
-cd pingzilla-enhanced
+git clone https://github.com/rsheyd/pingzilla-next.git
+cd pingzilla-next
 
 # Install dependencies
 pnpm install
@@ -140,7 +140,7 @@ make upload       # Show upload instructions
 
 ## Usage
 
-1. **Launch** - PingZilla Enhanced appears in your menu bar showing the current ping
+1. **Launch** - PingZilla Next appears in your menu bar showing the current ping
 2. **Click** the menu bar icon to open the detailed view with graph
 3. **Right-click** to access the quit menu
 4. **Settings** - Click "Settings" in the popup to configure:
@@ -191,8 +191,8 @@ MIT
 
 ## Credits
 
-PingZilla Enhanced is maintained by [rsheyd](https://github.com/rsheyd). The original PingZilla was created by Chriszilla and Claudio; see the [upstream project](https://github.com/PixelTowers/Pingzilla) for its contributors and history.
+PingZilla Next is maintained by [rsheyd](https://github.com/rsheyd). The original PingZilla was created by Chriszilla and Claudio; see the [upstream project](https://github.com/PixelTowers/Pingzilla) for its contributors and history.
 
 ---
 
-*PingZilla Enhanced: Stomping latency with a little more history.*
+*PingZilla Next: Stomping latency with a little more history.*

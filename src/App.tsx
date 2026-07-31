@@ -1,4 +1,4 @@
-// ABOUTME: PingZilla Enhanced React frontend - displays ping graph and current latency
+// ABOUTME: PingZilla Next React frontend - displays ping graph and current latency
 // ABOUTME: Supports multiple targets with tabs and statistics display
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
@@ -757,7 +757,7 @@ function App() {
       {/* Header */}
       <div className="header">
         <h1 className="title">
-          {viewMode === "settings" ? "PingZilla Enhanced Settings" : "PingZilla Enhanced"}
+          {viewMode === "settings" ? "PingZilla Next Settings" : "PingZilla Next"}
         </h1>
         {/* Hide settings button in dedicated settings window or dashboard */}
         {viewMode === "full" && (
@@ -1358,7 +1358,7 @@ function App() {
       {/* Footer */}
       <div className="footer">
         <span className="footer-text">
-          {viewMode === "settings" ? `PingZilla Enhanced v${appVersion}` : `Last 2 minutes · v${appVersion}`}
+          {viewMode === "settings" ? `PingZilla Next v${appVersion}` : `Last 2 minutes · v${appVersion}`}
         </span>
       </div>
     </div>
