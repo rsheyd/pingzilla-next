@@ -5,7 +5,7 @@
 <!-- ABOUTME: Declares encryption usage for export compliance -->
 <plist version="1.0">
 <dict>
-    <!-- Encryption compliance: PingZilla does not use non-exempt encryption -->
+    <!-- Encryption compliance: PingZilla Enhanced does not use non-exempt encryption -->
     <!-- HTTPS/TLS connections are exempt from export restrictions -->
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>

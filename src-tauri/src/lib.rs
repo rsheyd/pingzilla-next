@@ -1,4 +1,4 @@
-// ABOUTME: Main library for PingZilla - a menu bar ping monitor
+// ABOUTME: Main library for PingZilla Enhanced - a menu bar ping monitor
 // ABOUTME: Handles ping service, system tray, storage, and notifications
 
 use chrono::{DateTime, Utc};
@@ -1656,7 +1656,7 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
                                     let _ = app_handle
                                         .notification()
                                         .builder()
-                                        .title("PingZilla Alert")
+                                        .title("PingZilla Enhanced Alert")
                                         .body(format!("High latency detected: {:.0}ms", ms))
                                         .show();
                                 }
@@ -2044,7 +2044,7 @@ fn build_tray_menu(
         MenuItem::with_id(app, "dashboard", "📊 Open Dashboard...", true, None::<&str>)?;
     menu_items.push(Box::new(dashboard));
     menu_items.push(Box::new(PredefinedMenuItem::separator(app)?));
-    let quit = MenuItem::with_id(app, "quit", "Quit PingZilla", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit PingZilla Enhanced", true, None::<&str>)?;
     menu_items.push(Box::new(quit));
 
     let item_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
@@ -2198,7 +2198,7 @@ fn open_dashboard_window(app: &AppHandle) {
         "dashboard",
         tauri::WebviewUrl::App("index.html".into()),
     )
-    .title("PingZilla")
+    .title("PingZilla Enhanced")
     .inner_size(400.0, 600.0)
     .resizable(true)
     .visible(true)
@@ -2447,7 +2447,7 @@ pub fn run() {
                 .icon(icon)
                 .icon_as_template(true)
                 .title("...")
-                .tooltip("PingZilla - Network Monitor")
+                .tooltip("PingZilla Enhanced - Network Monitor")
                 .menu(&initial_menu)
                 .show_menu_on_left_click(true) // Both left and right click show menu - works in fullscreen!
                 .on_menu_event(|app, event| match event.id.as_ref() {
