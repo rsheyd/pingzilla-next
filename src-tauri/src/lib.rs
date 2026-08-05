@@ -19,6 +19,19 @@ use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{Mutex, Notify};
 
 const NETWORK_QUALITY_PATH: &str = "/usr/bin/networkQuality";
+const IP_INFO_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const IP_INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn build_ip_info_client(
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()
+        .map_err(|e| format!("Failed to create IP info client: {}", e))
+}
 
 fn run_network_quality_process(max_runtime_secs: u32) -> Result<serde_json::Value, String> {
     let output = Command::new(NETWORK_QUALITY_PATH)
@@ -892,7 +905,9 @@ async fn get_my_ip_info(
     }
 
     // Fetch from API
-    let resp = reqwest::get("http://ip-api.com/json/")
+    let resp = build_ip_info_client(IP_INFO_CONNECT_TIMEOUT, IP_INFO_REQUEST_TIMEOUT)?
+        .get("http://ip-api.com/json/")
+        .send()
         .await
         .map_err(|e| format!("Failed to fetch IP info: {}", e))?;
 
@@ -921,7 +936,9 @@ async fn get_my_ip_info(
 
 /// Fetch IP info directly from API (no caching, for VPN monitoring)
 async fn fetch_ip_info_internal() -> Result<IpInfo, String> {
-    let resp = reqwest::get("http://ip-api.com/json/")
+    let resp = build_ip_info_client(IP_INFO_CONNECT_TIMEOUT, IP_INFO_REQUEST_TIMEOUT)?
+        .get("http://ip-api.com/json/")
+        .send()
         .await
         .map_err(|e| format!("Failed to fetch IP info: {}", e))?;
 
@@ -1670,14 +1687,30 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
             // At 10s interval: tick 6, 12, 18... At 30s interval: tick 2, 4, 6...
             let site_check_interval = if last_interval_secs == 10 { 6 } else { 2 };
             if tick_count % site_check_interval == 0 {
-                let _ = check_all_sites(&app_handle, &state).await;
+                let app_handle = app_handle.clone();
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        check_all_sites(&app_handle, &state),
+                    )
+                    .await;
+                });
             }
 
             // === VPN/IP CHECK (every ~60 seconds, offset) ===
             let vpn_check_interval = if last_interval_secs == 10 { 6 } else { 2 };
             let vpn_offset = if last_interval_secs == 10 { 3 } else { 1 };
             if tick_count % vpn_check_interval == vpn_offset {
-                check_ip_change(&app_handle, &state).await;
+                let app_handle = app_handle.clone();
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        check_ip_change(&app_handle, &state),
+                    )
+                    .await;
+                });
             }
 
             // === SAVE HISTORY (every ~5 minutes) ===
@@ -2276,6 +2309,29 @@ mod tests {
             isp: Some("Example ISP".to_string()),
         };
         assert_eq!(network_fingerprint(&info), "203.0.113.1|Example ISP");
+    }
+
+    #[tokio::test]
+    async fn ip_info_client_times_out_when_server_never_responds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local test server");
+        let address = listener.local_addr().expect("read local test address");
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.expect("accept test request");
+            std::future::pending::<()>().await;
+        });
+
+        let client = build_ip_info_client(Duration::from_secs(1), Duration::from_millis(50))
+            .expect("build bounded client");
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect_err("request should time out");
+
+        assert!(error.is_timeout());
+        server.abort();
     }
 
     #[test]

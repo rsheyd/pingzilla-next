@@ -7,6 +7,8 @@
   - [Validation without launching the app](#validation-without-launching-the-app)
   - [Versioning](#versioning)
   - [Testing a local production bundle](#testing-a-local-production-bundle)
+    - [Combined command](#combined-command)
+    - [Detailed steps](#detailed-steps)
 
 ## Testing Changes on Your Mac
 
@@ -70,6 +72,22 @@ Do not increase the version for ordinary `pnpm tauri dev`, `pnpm build`, or `car
 Dev-style versions are for local testing only and must not be submitted to the Mac App Store. Before making a release candidate or distribution build, replace the prerelease version with the final numeric release version and verify the generated app reports it correctly.
 
 ## Testing a local production bundle
+
+### Combined command
+
+Quit currently running Pingzilla and then run:
+
+```bash
+pnpm tauri build --bundles app
+codesign --force --deep --sign - \
+  --entitlements src-tauri/Entitlements.plist \
+  "src-tauri/target/release/bundle/macos/PingZilla Next.app"
+rm -rf "/Applications/PingZilla Next.app"
+cp -R "src-tauri/target/release/bundle/macos/PingZilla Next.app" /Applications/
+open "/Applications/PingZilla Next.app"
+```
+
+### Detailed steps
 
 Create a production-style app when testing native runtime, sandbox, entitlement, packaging, installed-app behavior, or release behavior. This is a separate copy for release-like local testing; it is not needed just to make `pnpm tauri dev` pick up current source changes. If the bundle needs to be distinguishable from the current release or from earlier test bundles, assign it the next `-dev.N` version described above before building.
 
