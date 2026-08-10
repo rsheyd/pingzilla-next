@@ -1435,6 +1435,9 @@ async fn check_ip_change(app_handle: &AppHandle, state: &Arc<AppState>) {
         // Update current IP state
         *state.ip_info.lock().await = Some(current);
         *state.ip_info_last_check.lock().await = Some(Utc::now());
+
+        // Reflect the completed lookup immediately instead of waiting for the next ping tick.
+        update_tray_menu_items(state).await;
     }
 }
 
@@ -1698,10 +1701,9 @@ fn start_unified_background_service(app_handle: AppHandle, state: Arc<AppState>)
                 });
             }
 
-            // === VPN/IP CHECK (every ~60 seconds, offset) ===
+            // === VPN/IP CHECK (immediately, then every ~60 seconds) ===
             let vpn_check_interval = if last_interval_secs == 10 { 6 } else { 2 };
-            let vpn_offset = if last_interval_secs == 10 { 3 } else { 1 };
-            if tick_count % vpn_check_interval == vpn_offset {
+            if tick_count % vpn_check_interval == 1 {
                 let app_handle = app_handle.clone();
                 let state = state.clone();
                 tauri::async_runtime::spawn(async move {
