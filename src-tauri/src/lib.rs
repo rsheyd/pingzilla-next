@@ -4,6 +4,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -21,6 +24,45 @@ use tokio::sync::{Mutex, Notify};
 const NETWORK_QUALITY_PATH: &str = "/usr/bin/networkQuality";
 const IP_INFO_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IP_INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn lifecycle_paths() -> Option<(PathBuf, PathBuf)> {
+    let directory = dirs::home_dir()?.join("Library/Logs/PingZilla Next");
+    Some((directory.join("lifecycle.log"), directory.join("running")))
+}
+
+fn log_lifecycle(message: &str) {
+    let Some((log_path, _)) = lifecycle_paths() else {
+        return;
+    };
+    if let Some(directory) = log_path.parent() {
+        let _ = fs::create_dir_all(directory);
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = writeln!(file, "{} {}", Utc::now().to_rfc3339(), message);
+    }
+}
+
+fn begin_lifecycle_log(version: &str) {
+    let Some((_, marker_path)) = lifecycle_paths() else {
+        return;
+    };
+    if marker_path.exists() {
+        log_lifecycle("previous run ended without a clean exit");
+    }
+    log_lifecycle(&format!(
+        "started version={} pid={}",
+        version,
+        std::process::id()
+    ));
+    let _ = fs::write(marker_path, std::process::id().to_string());
+}
+
+fn finish_lifecycle_log() {
+    log_lifecycle("clean exit");
+    if let Some((_, marker_path)) = lifecycle_paths() {
+        let _ = fs::remove_file(marker_path);
+    }
+}
 
 fn build_ip_info_client(
     connect_timeout: Duration,
@@ -1543,6 +1585,8 @@ fn request_app_exit(app: &AppHandle) {
         return;
     }
 
+    log_lifecycle("quit requested from menu");
+
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         save_history_async(&state).await;
@@ -2417,6 +2461,12 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let previous_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        log_lifecycle(&format!("panic: {panic_info}"));
+        previous_panic_hook(panic_info);
+    }));
+
     let (
         loaded_history,
         loaded_targets,
@@ -2487,6 +2537,8 @@ pub fn run() {
             set_speed_test_duration,
         ])
         .setup(move |app| {
+            begin_lifecycle_log(&app.package_info().version.to_string());
+
             // Keep this menu-bar app out of the Dock. Activation policy and sandbox
             // network permissions are independent; the old Regular-policy requirement
             // was likely a mistaken diagnosis or workaround for an earlier issue.
@@ -2532,6 +2584,11 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                finish_lifecycle_log();
+            }
+        });
 }

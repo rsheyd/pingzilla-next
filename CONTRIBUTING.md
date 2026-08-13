@@ -75,17 +75,13 @@ Dev-style versions are for local testing only and must not be submitted to the M
 
 ### Combined command
 
-Quit currently running Pingzilla and then run:
+Build, ad-hoc sign, install in `/Applications`, launch, and verify the app with:
 
 ```bash
-pnpm tauri build --bundles app
-codesign --force --deep --sign - \
-  --entitlements src-tauri/Entitlements.plist \
-  "src-tauri/target/release/bundle/macos/PingZilla Next.app"
-rm -rf "/Applications/PingZilla Next.app"
-cp -R "src-tauri/target/release/bundle/macos/PingZilla Next.app" /Applications/
-open "/Applications/PingZilla Next.app"
+./scripts/build-install-macos.sh
 ```
+
+The script skips DMG creation and replaces the installed bundle without retaining a backup. It stops rather than force-killing the app if PingZilla Next does not quit cleanly.
 
 ### Detailed steps
 
