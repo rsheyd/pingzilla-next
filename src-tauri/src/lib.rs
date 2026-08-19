@@ -2049,6 +2049,23 @@ fn register_sleep_wake_observer(_state: Arc<AppState>) {
     // No-op on non-macOS platforms
 }
 
+/// Keep the windowless menu-bar monitor alive until the user explicitly quits it.
+#[cfg(target_os = "macos")]
+fn disable_macos_process_termination() {
+    use objc2_foundation::NSProcessInfo;
+
+    unsafe {
+        let process_info = NSProcessInfo::processInfo();
+        process_info.disableSuddenTermination();
+        process_info.disableAutomaticTermination(objc2_foundation::ns_string!(
+            "PingZilla Next is monitoring network latency"
+        ));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn disable_macos_process_termination() {}
+
 /// Convert country code to flag emoji (e.g., "US" -> "🇺🇸")
 fn country_to_flag(country_code: &str) -> String {
     if country_code.len() != 2 {
@@ -2538,6 +2555,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             begin_lifecycle_log(&app.package_info().version.to_string());
+            disable_macos_process_termination();
 
             // Keep this menu-bar app out of the Dock. Activation policy and sandbox
             // network permissions are independent; the old Regular-policy requirement

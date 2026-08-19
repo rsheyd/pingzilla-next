@@ -2,6 +2,12 @@
 
 Notable changes to PingZilla Next are documented here.
 
+## [1.4.3-dev.1] - 2026-08-19
+
+### Fixed
+
+- Prevent macOS automatic and sudden termination from silently stopping the windowless menu-bar monitor.
+
 ## [1.4.2] - 2026-08-13
 
 ### Added

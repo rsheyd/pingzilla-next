@@ -1,7 +1,7 @@
 {
   "name": "pingzilla",
   "private": true,
-  "version": "1.4.2",
+  "version": "1.4.3-dev.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
