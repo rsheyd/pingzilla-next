@@ -1,6 +1,6 @@
 [package]
 name = "pingzilla"
-version = "0.1.0"
+version = "1.4.2"
 description = "PingZilla Next - Menu bar network ping monitor"
 authors = ["Chriszilla & Claudio"]
 edition = "2021"

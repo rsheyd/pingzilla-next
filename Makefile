@@ -26,7 +26,7 @@ GREEN := \033[0;32m
 YELLOW := \033[0;33m
 NC := \033[0m # No Color
 
-.PHONY: help dev build release universal clean run kill pkg sign upload lint check appstore clean-profile icons
+.PHONY: help dev build release universal clean run kill pkg sign upload lint check appstore clean-profile icons version version-check
 
 help: ## Show this help message
 	@echo "$(GREEN)PingZilla Build System$(NC)"
@@ -163,6 +163,13 @@ upload: ## Upload to App Store Connect
 	@echo "Generate App-Specific Password at: https://appleid.apple.com"
 
 # Maintenance
+version: ## Set all application and package versions: make version VERSION=1.4.3
+	@test "$(origin VERSION)" = "command line" || (echo "Usage: make version VERSION=1.4.3" >&2; exit 2)
+	./scripts/version.sh set "$(VERSION)"
+
+version-check: ## Verify that all application and package versions match
+	./scripts/version.sh check
+
 clean: ## Clean build artifacts
 	@echo "$(GREEN)Cleaning build artifacts...$(NC)"
 	rm -rf $(BUILD_DIR)/release

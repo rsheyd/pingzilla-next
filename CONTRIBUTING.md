@@ -59,7 +59,13 @@ pnpm build
 
 ## Versioning
 
-The user-facing app version is the `version` value in `src-tauri/tauri.conf.json`. The `0.1.0` values in `package.json` and `src-tauri/Cargo.toml` identify the frontend and Rust packages; they are not the PingZilla Next release version and do not normally need to change with an app release.
+PingZilla Next uses one coordinated version across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Do not edit these values independently. Set the version from the repository root with:
+
+```bash
+./scripts/version.sh set 1.4.3
+```
+
+The equivalent Make target is `make version VERSION=1.4.3`. Verify the files at any time with `./scripts/version.sh check` or `make version-check`.
 
 Use semantic versioning for release versions:
 
@@ -67,7 +73,7 @@ Use semantic versioning for release versions:
 - Increase the minor number for a meaningful set of new, compatible features, for example `1.3.11` to `1.4.0`.
 - Reserve a major-version increase for a release with substantial incompatible behavior or expectations.
 
-Do not increase the version for ordinary `pnpm tauri dev`, `pnpm build`, or `cargo test` runs. When creating a local production bundle whose identity matters—especially while following the steps below to test packaging, sandboxing, or several release candidates—use a prerelease version based on the next intended release, such as `1.3.12-dev.1`. Increase the final number for another distinguishable build (`dev.2`, `dev.3`, and so on). This prevents an unreleased test bundle from presenting itself as the already-published stable release.
+Do not increase the version for ordinary `pnpm tauri dev`, `pnpm build`, or `cargo test` runs. When creating a local production bundle whose identity matters—especially while following the steps below to test packaging, sandboxing, or several release candidates—use the version script with a prerelease version based on the next intended release, such as `./scripts/version.sh set 1.4.3-dev.1`. Increase the final number for another distinguishable build (`dev.2`, `dev.3`, and so on). This prevents an unreleased test bundle from presenting itself as the already-published stable release.
 
 Dev-style versions are for local testing only and must not be submitted to the Mac App Store. Before making a release candidate or distribution build, replace the prerelease version with the final numeric release version and verify the generated app reports it correctly.
 
