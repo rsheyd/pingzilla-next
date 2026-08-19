@@ -49,6 +49,7 @@ pnpm build
 ```
 
 This checks TypeScript and creates the Vite frontend build. It does not create or update a macOS app bundle.
+It also verifies that the application and package versions remain synchronized.
 
 For Rust/backend changes:
 
