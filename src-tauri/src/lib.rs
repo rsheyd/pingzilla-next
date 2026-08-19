@@ -2066,6 +2066,16 @@ fn disable_macos_process_termination() {
 #[cfg(not(target_os = "macos"))]
 fn disable_macos_process_termination() {}
 
+fn schedule_macos_process_termination_guard(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let _ = app.run_on_main_thread(|| {
+            disable_macos_process_termination();
+            log_lifecycle("disabled macOS automatic and sudden termination");
+        });
+    });
+}
+
 /// Convert country code to flag emoji (e.g., "US" -> "🇺🇸")
 fn country_to_flag(country_code: &str) -> String {
     if country_code.len() != 2 {
@@ -2555,7 +2565,6 @@ pub fn run() {
         ])
         .setup(move |app| {
             begin_lifecycle_log(&app.package_info().version.to_string());
-            disable_macos_process_termination();
 
             // Keep this menu-bar app out of the Dock. Activation policy and sandbox
             // network permissions are independent; the old Regular-policy requirement
@@ -2592,6 +2601,7 @@ pub fn run() {
             // Battery optimization: register for sleep/wake notifications
             // App Nap is allowed - macOS will manage power normally
             register_sleep_wake_observer(app_state.clone());
+            schedule_macos_process_termination_guard(app.handle().clone());
 
             // Single unified background service for battery efficiency
             // Consolidates ping, site monitoring, and VPN check into ONE timer

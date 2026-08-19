@@ -2,7 +2,7 @@
 
 Notable changes to PingZilla Next are documented here.
 
-## [1.4.3-dev.1] - 2026-08-19
+## [1.4.3] - 2026-08-19
 
 ### Fixed
 

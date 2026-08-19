@@ -74,9 +74,7 @@ Use semantic versioning for release versions:
 - Increase the minor number for a meaningful set of new, compatible features, for example `1.3.11` to `1.4.0`.
 - Reserve a major-version increase for a release with substantial incompatible behavior or expectations.
 
-Do not increase the version for ordinary `pnpm tauri dev`, `pnpm build`, or `cargo test` runs. When creating a local production bundle whose identity matters—especially while following the steps below to test packaging, sandboxing, or several release candidates—use the version script with a prerelease version based on the next intended release, such as `./scripts/version.sh set 1.4.3-dev.1`. Increase the final number for another distinguishable build (`dev.2`, `dev.3`, and so on). This prevents an unreleased test bundle from presenting itself as the already-published stable release.
-
-Dev-style versions are for local testing only and must not be submitted to the Mac App Store. Before making a release candidate or distribution build, replace the prerelease version with the final numeric release version and verify the generated app reports it correctly.
+Do not increase the version for ordinary `pnpm tauri dev`, `pnpm build`, or `cargo test` runs. For user-visible changes, set the next ordinary semantic version and record it in `CHANGELOG.md`. Use that same version for local production bundles and the eventual release; do not use `-dev.N` prerelease versions.
 
 ## Testing a local production bundle
 
@@ -92,7 +90,7 @@ The script skips DMG creation and replaces the installed bundle without retainin
 
 ### Detailed steps
 
-Create a production-style app when testing native runtime, sandbox, entitlement, packaging, installed-app behavior, or release behavior. This is a separate copy for release-like local testing; it is not needed just to make `pnpm tauri dev` pick up current source changes. If the bundle needs to be distinguishable from the current release or from earlier test bundles, assign it the next `-dev.N` version described above before building.
+Create a production-style app when testing native runtime, sandbox, entitlement, packaging, installed-app behavior, or release behavior. This is a separate copy for release-like local testing; it is not needed just to make `pnpm tauri dev` pick up current source changes. If the bundle includes user-visible changes, assign it the next ordinary semantic version described above before building.
 
 ```bash
 pnpm tauri build --bundles app
