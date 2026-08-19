@@ -67,11 +67,11 @@ PingZilla Next is a connectivity aid, not an uptime service or a security contro
 
 PingZilla Next does not require an account. Monitoring history and settings are stored locally in `~/Library/Application Support/pingzilla/history_v2.json`, and time-series history is limited to the most recent 24 hours when loaded.
 
-Depending on the features you enable or use, the app makes these network requests:
+During normal monitoring and when you use optional diagnostics, the app makes these network requests:
 
 - ICMP echo requests to the targets you configure
 - Direct HTTP or HTTPS requests to the sites you configure for availability checks
-- A public-IP lookup through `ip-api.com` for IP, country, city, and ISP information used by network-session and VPN-change features
+- A public-IP lookup through `ip-api.com` for IP, country, city, and ISP information used by network-session tracking and VPN-change features
 - A local invocation of `/usr/bin/networkQuality` when you explicitly start a network quality test; that Apple tool performs its own network measurements
 
 The current `ip-api.com` integration uses unencrypted HTTP. Public-IP lookup metadata can therefore be visible to the network and to that third-party service. This is a known limitation of the current implementation.
@@ -80,8 +80,8 @@ The current `ip-api.com` integration uses unencrypted HTTP. Public-IP lookup met
 
 - [Contributing](CONTRIBUTING.md) — local development, validation, versioning, and production-bundle testing
 - [Changelog](CHANGELOG.md) — user-visible changes by release
+- [Privacy](PRIVACY.md) — local storage, network requests, and third-party services
 - [Identity migration plan](docs/identity-migration.md) — planned separation of bundle, signing, autostart, and storage identity
-- [Marketing plan](MarketingPlan.md) — early positioning and launch notes
 
 The application uses React 19 and TypeScript for the interface, Rust for monitoring and persistence, and Tauri 2 for the macOS application shell. Run `make help` for the available development and packaging shortcuts.
 

@@ -1,66 +1,27 @@
-# PingZilla TODO
+# PingZilla Next TODO
 
-## App Store Submission Checklist
+This list tracks work that is still relevant to the independently maintained PingZilla Next edition. Release-specific identity work is detailed in [docs/identity-migration.md](docs/identity-migration.md).
 
-### Pre-Submission (Manual Steps)
+## Before broader distribution
 
-- [ ] Get Apple Team ID from [developer.apple.com/account](https://developer.apple.com/account)
-- [ ] Update `src-tauri/Entitlements.plist` - Replace `YOUR_TEAM_ID` with actual Team ID
-- [ ] Create App ID in Apple Developer portal (Bundle ID: `com.pingzilla.monitor`)
-- [ ] Create "Apple Distribution" certificate
-- [ ] Create "Mac App Store Connect" provisioning profile
-- [ ] Download `.provisionprofile` and place in `src-tauri/`
-- [ ] Create app record in [App Store Connect](https://appstoreconnect.apple.com)
-- [ ] Set up banking/tax info in App Store Connect
-- [ ] Create privacy policy (host on GitHub Pages or similar)
+- [ ] Replace the unencrypted `http://ip-api.com/json/` public-IP lookup with an HTTPS-capable provider or another encrypted design, then update the privacy documentation and tests.
+- [ ] Choose and verify the permanent bundle identifier, Apple Team ID, signing configuration, and distribution channel.
+- [ ] Implement and validate the copy-only storage migration described in `docs/identity-migration.md`.
+- [ ] Confirm that upstream PingZilla and PingZilla Next can run concurrently without sharing storage or launch-at-login state.
+- [ ] Prepare release notes, backup guidance, rollback instructions, and refreshed screenshots for the identity release.
+- [ ] Decide whether the first independent release will use GitHub Releases, notarized direct download, the Mac App Store, or a staged combination.
 
-### Build & Sign
+## Distribution preparation
 
-- [ ] Build universal binary: `make universal`
-- [ ] Sign the app with Apple Distribution certificate
-- [ ] Create installer package: `make pkg`
-- [ ] Upload to App Store Connect: `make upload`
+- [ ] Create the final Apple Developer App ID and matching provisioning profile only after the permanent bundle identifier is chosen.
+- [ ] Verify direct-download signing and notarization or complete the appropriate App Store Connect setup.
+- [ ] Review `PRIVACY.md` against the release candidate and any store disclosure requirements.
+- [ ] Test the packaged release on supported macOS versions and both architectures if universal builds remain supported.
+- [ ] Publish checksums and installation instructions with the release artifacts.
 
-### App Store Metadata
+## Possible future features
 
-- [ ] App Name: PingZilla
-- [ ] Subtitle: Network Ping Monitor
-- [ ] Category: Utilities
-- [ ] Price: $1.99 - $2.99 (your choice)
-- [ ] Screenshots (1280x800 or 1440x900):
-  - [ ] Menu bar with icon
-  - [ ] Popup window with graph
-  - [ ] Settings panel
-  - [ ] Statistics view
-
-### App Description
-
-```
-PingZilla is a lightweight menu bar app that monitors your network latency in real-time.
-
-Features:
-• Real-time ping monitoring in your menu bar
-• Monitor multiple targets simultaneously
-• Visual latency graph (last 2 minutes)
-• Statistics dashboard (min/max/avg, packet loss)
-• High latency notifications
-• Cute Godzilla icons that change based on connection quality
-• Launch at login support
-• 24-hour history persistence
-
-Perfect for developers, gamers, and anyone who wants to keep an eye on their network connection.
-```
-
-### Keywords (max 100 chars)
-
-`ping,network,latency,monitor,menu bar,connection,internet,speed,utility`
-
----
-
-## Future Features
-
-- [ ] Traceroute on-demand
-- [ ] Export history to CSV/JSON
-- [ ] Custom notification sounds
-- [ ] Widget support
-- [ ] iOS companion app
+- [ ] Export history to CSV or JSON.
+- [ ] Add on-demand traceroute diagnostics.
+- [ ] Add configurable notification sounds.
+- [ ] Evaluate a menu bar widget or companion experience only after the core macOS release is stable.
