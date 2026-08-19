@@ -1,198 +1,92 @@
 # PingZilla Next
 
-> *A fast-moving edition of PingZilla*
-
 <p align="center">
   <img src="src-tauri/icons/icon.png" width="128" alt="PingZilla Next app icon">
 </p>
 
-A lightweight macOS menu bar application that monitors network latency in real time. PingZilla Next builds on the original PingZilla with longer-term history, network-session tracking, and additional diagnostics. It is built with Tauri 2, React, and Rust.
-
-## About This Fork
-
-PingZilla Next is an unofficial, fast-moving edition of [PixelTowers/Pingzilla](https://github.com/PixelTowers/Pingzilla) where I develop and use new monitoring features. It keeps the original project's lightweight menu bar experience, and suitable changes may continue to be proposed upstream.
-
-### What's Different?
-
-- Up to 24 hours of persisted, range-selectable ping history
-- Network sessions grouped by public IP and ISP fingerprint
-- Custom aliases for recognizing networks at a glance
-- User-triggered macOS network quality tests with recent results shown alongside ping history
-- Historical graph segmentation, downsampling, and detailed point inspection
-- Ongoing fixes and usability improvements beyond the current upstream release
-
-## Why PingZilla Next?
-
-**For Remote Workers & Digital Nomads**
-> Working from a café in Lisbon? PingZilla Next alerts you the moment your VPN drops, before your real IP gets exposed. See your current country right in the menu bar.
-
-**For Gamers & Streamers**
-> That lag spike just cost you the match. PingZilla Next lives in your menu bar showing real-time latency. Green means go, red means rage quit.
-
-**For Developers**
-> A menu bar ping monitor that doesn't eat your battery. Built with Tauri 2 and Rust, not another Electron memory hog. [Open source](https://github.com/rsheyd/pingzilla-next).
-
-## Features
-
-- **Live Menu Bar Display** - Current ping displayed right in your menu bar
-- **Dynamic Menu Bar Icons** - PingZilla Next's mood changes based on latency:
-  - Happy (< 60ms) - Everything is great!
-  - Angry (60-150ms) - Getting concerned...
-  - Sad (> 150ms) - Network troubles!
-  - Dead (timeout) - No response!
-- **IP Geolocation** - See your public IP address and country with flag emoji - perfect for VPN users
-- **Site Monitoring** - Monitor up to 10 websites or servers with 60-second check intervals
-- **Down Alerts** - Get notified when monitored sites go down
-- **Multiple Targets** - Monitor multiple hosts simultaneously
-- **Statistics Dashboard** - View min/max/avg latency, uptime percentage, and packet loss
-- **Real-Time Graph** - Visual history of the last 2 minutes of ping data
-- **Display Mode Options** - Choose what to show in menu bar:
-  - Icon + Ping (default)
-  - Icon Only
-  - Ping Only
-- **Smart Notifications** - Get alerted when latency exceeds your threshold (default: 400ms)
-- **Configurable Target** - Ping any host (default: 8.8.8.8)
-- **Persistent History** - Stores up to 24 hours of ping data locally
-- **Smooth Animations** - Buttery smooth number transitions
-- **Native Performance** - Rust backend with minimal resource usage
-- **No Root Required** - Uses system ping command
-
-## Menu Bar Icons
-
-PingZilla Next uses expressive icons to show network health at a glance:
-
-| Icon | Latency | Mood |
-|------|---------|------|
-| ![Happy](src-tauri/icons/pingzilla_happy.png) | < 60ms | Happy |
-| ![Angry](src-tauri/icons/pinzilla_angry.png) | 60-150ms | Angry |
-| ![Sad](src-tauri/icons/pingzilla_sad.png) | > 150ms | Sad |
-| ![Dead](src-tauri/icons/pingzilla_dead.png) | Timeout | Dead |
-
-## Screenshots
+PingZilla Next is a lightweight macOS menu bar app for watching latency, recognizing network changes, and investigating recent connection quality. It combines live ICMP monitoring with 24-hour local history, network sessions, site checks, and user-triggered macOS network quality tests.
 
 <p align="center">
-  <img src="screenshots/screenshot1.jpeg" width="800" alt="PingZilla Next dashboard">
+  <img src="screenshots/screenshot1.jpeg" width="800" alt="PingZilla Next dashboard showing current latency and recent history">
 </p>
 
-<p align="center">
-  <img src="screenshots/screenshot3.png" width="400" alt="PingZilla Next popup">
-  <img src="screenshots/screenshot2.png" width="400" alt="PingZilla Next menu bar">
-</p>
+## Project status
 
-## Installation
+PingZilla Next is an independently maintained downstream edition of [PixelTowers/Pingzilla](https://github.com/PixelTowers/Pingzilla). It is not maintained by or affiliated with the upstream maintainers, but suitable fixes and improvements may still be offered upstream.
 
-### From Release
+The current release retains the upstream bundle identifier and local storage namespace for compatibility. Do not run PingZilla and PingZilla Next at the same time because both can write to the same history file. A separate identity and safe data transition are planned in the [identity migration plan](docs/identity-migration.md).
 
-Download the latest available build from the [Releases](https://github.com/rsheyd/pingzilla-next/releases) page. If no packaged release is available for the version you want, build it from source below.
+## Highlights
 
-The original PingZilla is also available from the [Mac App Store](https://apps.apple.com/app/pingzilla/id6757017560). That listing is maintained by the upstream project and is not PingZilla Next.
+- Live menu bar latency with icon-and-ping, icon-only, and ping-only display modes
+- Configurable ICMP targets, ping interval, and high-latency notification threshold
+- Up to 24 hours of locally persisted, range-selectable history with statistics and packet loss
+- Network sessions grouped by public IP and ISP, with custom names for familiar networks
+- User-triggered tests powered by macOS `networkQuality`, stored alongside recent history
+- Direct availability checks for up to 10 websites or servers, with down notifications
+- Optional public IP, location, ISP, and VPN-change monitoring
+- Launch-at-login support and native notifications
 
-### Build from Source
+The menu bar icon summarizes the latest result:
 
-#### Prerequisites
+| Icon | Result | Meaning |
+|------|--------|---------|
+| ![Happy](src-tauri/icons/pingzilla_happy.png) | Under 100 ms | Good |
+| ![Angry](src-tauri/icons/pinzilla_angry.png) | 100–149 ms | Elevated |
+| ![Sad](src-tauri/icons/pingzilla_sad.png) | 150 ms or more | Poor |
+| ![Dead](src-tauri/icons/pingzilla_dead.png) | Timeout | No response |
 
-- [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://rustup.rs/)
-- Xcode Command Line Tools
+## Requirements and installation
 
-#### Steps
+PingZilla Next requires macOS 12 or later.
+
+Download a packaged build from [GitHub Releases](https://github.com/rsheyd/pingzilla-next/releases) when one is available. The [Mac App Store listing](https://apps.apple.com/app/pingzilla/id6757017560) belongs to the upstream PingZilla project and does not install PingZilla Next.
+
+To build the current source yourself, install Node.js 18 or later, [pnpm](https://pnpm.io/), [Rust](https://rustup.rs/), and the Xcode Command Line Tools, then run:
 
 ```bash
-# Clone the repo
 git clone https://github.com/rsheyd/pingzilla-next.git
 cd pingzilla-next
-
-# Install dependencies
 pnpm install
-
-# Run in development mode
-pnpm tauri dev
-
-# Build for production
-pnpm tauri build
+pnpm tauri build --bundles app
 ```
 
-The built app will be in `src-tauri/target/release/bundle/macos/`.
+The app bundle is created at `src-tauri/target/release/bundle/macos/PingZilla Next.app`. See [CONTRIBUTING.md](CONTRIBUTING.md) for development, validation, local signing, and installation workflows.
 
-### App Store Build
+## Getting started
 
-To build for Mac App Store submission:
+1. Launch PingZilla Next and find its latency indicator in the menu bar.
+2. Click the indicator and choose **Open Dashboard…** to see recent history and settings.
+3. Keep the default target or add the hosts you want to monitor.
+4. Adjust the ping interval, alert threshold, display mode, site monitors, VPN checks, and launch-at-login setting as needed.
+5. Run a network quality test from the dashboard when you want macOS download, upload, and responsiveness diagnostics.
 
-```bash
-# Full pipeline: build universal binary, sign, and create .pkg
-make appstore
+PingZilla Next is a connectivity aid, not an uptime service or a security control. Site checks run only while the app is active, and VPN-change notifications cannot guarantee that traffic was protected.
 
-# Or step by step:
-make universal    # Build universal binary (Intel + Apple Silicon)
-make sign         # Sign with Apple Distribution certificate
-make pkg          # Create signed installer package
-make upload       # Show upload instructions
-```
+## Data and network access
 
-**Prerequisites for App Store:**
-1. Apple Developer account
-2. App Store provisioning profile (save as `src-tauri/embedded.provisionprofile`)
-3. Certificates installed in Keychain:
-   - Apple Distribution certificate
-   - 3rd Party Mac Developer Installer certificate
-4. Apple WWDR intermediate certificate
+PingZilla Next does not require an account. Monitoring history and settings are stored locally in `~/Library/Application Support/pingzilla/history_v2.json`, and time-series history is limited to the most recent 24 hours when loaded.
 
-## Usage
+Depending on the features you enable or use, the app makes these network requests:
 
-1. **Launch** - PingZilla Next appears in your menu bar showing the current ping
-2. **Click** the menu bar icon to open the detailed view with graph
-3. **Right-click** to access the quit menu
-4. **Settings** - Click "Settings" in the popup to configure:
-   - **Target**: The host to ping
-   - **Alert threshold**: Latency (in ms) that triggers notifications
-   - **Display Mode**: What to show in the menu bar
+- ICMP echo requests to the targets you configure
+- Direct HTTP or HTTPS requests to the sites you configure for availability checks
+- A public-IP lookup through `ip-api.com` for IP, country, city, and ISP information used by network-session and VPN-change features
+- A local invocation of `/usr/bin/networkQuality` when you explicitly start a network quality test; that Apple tool performs its own network measurements
 
-## Tech Stack
+The current `ip-api.com` integration uses unencrypted HTTP. Public-IP lookup metadata can therefore be visible to the network and to that third-party service. This is a known limitation of the current implementation.
 
-- **Frontend**: React 19, TypeScript, Recharts
-- **Backend**: Rust, Tauri 2
-- **Build**: Vite, pnpm
+## Development and project documents
 
-## Make Targets
+- [Contributing](CONTRIBUTING.md) — local development, validation, versioning, and production-bundle testing
+- [Changelog](CHANGELOG.md) — user-visible changes by release
+- [Identity migration plan](docs/identity-migration.md) — planned separation of bundle, signing, autostart, and storage identity
+- [Marketing plan](MarketingPlan.md) — early positioning and launch notes
 
-Run `make help` to see all available commands:
+The application uses React 19 and TypeScript for the interface, Rust for monitoring and persistence, and Tauri 2 for the macOS application shell. Run `make help` for the available development and packaging shortcuts.
 
-| Command | Description |
-|---------|-------------|
-| `make dev` | Start development server with hot reload |
-| `make build` | Build for current architecture |
-| `make universal` | Build universal binary (Intel + Apple Silicon) |
-| `make appstore` | Full App Store build pipeline |
-| `make sign` | Sign app for distribution |
-| `make pkg` | Create installer package |
-| `make upload` | Show upload instructions |
-| `make clean` | Clean build artifacts |
-| `make lint` | Run linters |
-| `make info` | Show build info |
+## License and attribution
 
-## Color Indicators
+PingZilla Next is licensed under the [Apache License 2.0](LICENSE), matching the license included with the upstream work.
 
-| Color  | Latency    | Status    |
-|--------|------------|-----------|
-| Green  | < 60ms     | Excellent |
-| Yellow | 60-150ms   | Good      |
-| Red    | > 150ms    | Poor      |
-| Gray   | Timeout    | No response |
-
-## Documentation
-
-- [Contributing and local testing](CONTRIBUTING.md) - Test development changes without removing the installed app
-- [Marketing Plan](MarketingPlan.md) - Launch strategy and growth plans
-
-## License
-
-MIT
-
-## Credits
-
-PingZilla Next is maintained by [rsheyd](https://github.com/rsheyd). The original PingZilla was created by Chriszilla and Claudio; see the [upstream project](https://github.com/PixelTowers/Pingzilla) for its contributors and history.
-
----
-
-*PingZilla Next: Stomping latency with a little more history.*
+PingZilla Next is maintained by [Roman Sheydvasser](https://github.com/rsheyd). It is derived from [PixelTowers/Pingzilla](https://github.com/PixelTowers/Pingzilla), originally created by Chriszilla and Claudio; the upstream repository preserves its contributor history.
