@@ -31,10 +31,10 @@ The menu bar icon summarizes the latest result:
 
 | Icon | Result | Meaning |
 |------|--------|---------|
-| ![Happy](src-tauri/icons/pingzilla_happy.png) | Under 100 ms | Good |
-| ![Angry](src-tauri/icons/pinzilla_angry.png) | 100–149 ms | Elevated |
-| ![Sad](src-tauri/icons/pingzilla_sad.png) | 150 ms or more | Poor |
-| ![Dead](src-tauri/icons/pingzilla_dead.png) | Timeout | No response |
+| <img src="src-tauri/icons/pingzilla_happy.png" height="24" alt="Happy menu bar icon"> | Under 100 ms | Good |
+| <img src="src-tauri/icons/pinzilla_angry.png" height="24" alt="Angry menu bar icon"> | 100–149 ms | Elevated |
+| <img src="src-tauri/icons/pingzilla_sad.png" height="24" alt="Sad menu bar icon"> | 150 ms or more | Poor |
+| <img src="src-tauri/icons/pingzilla_dead.png" height="24" alt="Dead menu bar icon"> | Timeout | No response |
 
 ## Requirements and installation
 
