@@ -2,6 +2,13 @@
 
 Notable changes to PingZilla Next are documented here.
 
+## [1.5.0] - 2026-08-19
+
+### Added
+
+- Show the BSSID of the Wi-Fi access point associated with the current network session after explicit macOS Location Services permission.
+- Record five-minute lifecycle heartbeats and catchable termination signals to improve unexpected-exit diagnosis.
+
 ## [1.4.3] - 2026-08-19
 
 ### Fixed

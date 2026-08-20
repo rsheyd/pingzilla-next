@@ -4,7 +4,7 @@ PingZilla Next is a local macOS network-monitoring app. It does not require an a
 
 ## Data stored on your Mac
 
-PingZilla Next stores monitoring history and settings in `~/Library/Application Support/pingzilla/history_v2.json`. This file can include configured targets, site-monitor URLs, public IP and ISP-derived network sessions, custom network names, VPN-monitoring settings, notification settings, and recent macOS network quality results. Time-series history is limited to the most recent 24 hours when the file is loaded.
+PingZilla Next stores monitoring history and settings in `~/Library/Application Support/pingzilla/history_v2.json`. This file can include configured targets, site-monitor URLs, public IP and ISP-derived network sessions, locally observed Wi-Fi BSSIDs, custom network names, VPN-monitoring settings, notification settings, and recent macOS network quality results. Time-series history is limited to the most recent 24 hours when the file is loaded.
 
 The app also writes lifecycle diagnostics to `~/Library/Logs/PingZilla Next/`. These logs record application starts, versions, process identifiers, clean exits, and detection of a previously unclean exit; they are not intended to contain targets, monitored URLs, public IP addresses, or monitoring history.
 
@@ -24,6 +24,8 @@ Third-party services process requests under their own terms and privacy practice
 ## macOS features
 
 If enabled, PingZilla Next uses macOS notifications for latency, site, or network-change alerts and a macOS LaunchAgent for launch at login. These settings are managed through macOS and the app.
+
+When you choose **Show BSSID**, PingZilla Next requests Location Services access because macOS protects Wi-Fi network identifiers behind that permission. The app reads the BSSID of the access point your Mac is using and stores it with the local network session; it does not request geographic coordinates or transmit the BSSID.
 
 ## Scope and updates
 

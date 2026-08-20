@@ -89,6 +89,7 @@ interface NetworkSession {
   public_ip: string;
   isp: string | null;
   label: string | null;
+  bssid: string | null;
   started_at: string;
   ended_at: string | null;
 }
@@ -274,6 +275,8 @@ function App() {
   const [speedTesting, setSpeedTesting] = useState(false);
   const [speedTestSecondsRemaining, setSpeedTestSecondsRemaining] = useState(0);
   const [speedTestError, setSpeedTestError] = useState<string | null>(null);
+  const [bssidLoading, setBssidLoading] = useState(false);
+  const [bssidError, setBssidError] = useState<string | null>(null);
   // App version from Tauri
   const [appVersion, setAppVersion] = useState("");
 
@@ -736,6 +739,25 @@ function App() {
       setSpeedTesting(false);
     }
   }, [activeTarget, selectedPing, speedTestDuration]);
+
+  const revealBssid = useCallback(async () => {
+    if (!sessionDetails) return;
+    setBssidLoading(true);
+    setBssidError(null);
+    try {
+      await invoke<string>("reveal_current_bssid");
+      const sessions = await invoke<NetworkSession[]>("get_network_sessions");
+      setNetworkSessions(sessions);
+      setSessionDetails(await invoke<SessionDetails>("get_session_details", {
+        sessionId: sessionDetails.session.id,
+        target: activeTarget,
+      }));
+    } catch (error) {
+      setBssidError(String(error));
+    } finally {
+      setBssidLoading(false);
+    }
+  }, [activeTarget, sessionDetails]);
 
   useEffect(() => {
     if (!speedTesting) {
@@ -1218,6 +1240,20 @@ function App() {
                 ? "Timeout"
                 : `${Math.round(selectedPing.latency_ms)} ms`}
             </strong>
+            <span>BSSID</span>
+            <strong>
+              {sessionDetails?.session.bssid ||
+                (sessionDetails && !sessionDetails.session.ended_at ? (
+                  <button
+                    className="bssid-reveal-btn"
+                    onClick={revealBssid}
+                    disabled={bssidLoading}
+                    title="macOS requires Location Services access to reveal Wi-Fi identifiers"
+                  >
+                    {bssidLoading ? "Waiting for permission…" : "Show BSSID"}
+                  </button>
+                ) : "—")}
+            </strong>
             <span>Session duration</span>
             <strong>
               {sessionDetails
@@ -1258,6 +1294,7 @@ function App() {
                 : "—"}
             </strong>
           </div>
+          {bssidError && <div className="bssid-error">{bssidError}</div>}
           {sessionDetails?.latest_speed_test && (
             <div className="speed-test-result">
               <div>

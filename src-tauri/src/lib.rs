@@ -24,6 +24,10 @@ use tokio::sync::{Mutex, Notify};
 const NETWORK_QUALITY_PATH: &str = "/usr/bin/networkQuality";
 const IP_INFO_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IP_INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const LIFECYCLE_LOG_MAX_BYTES: u64 = 512 * 1024;
+const LIFECYCLE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+static LIFECYCLE_LOG_LOCK: StdMutex<()> = StdMutex::new(());
+static SIGNAL_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn lifecycle_paths() -> Option<(PathBuf, PathBuf)> {
     let directory = dirs::home_dir()?.join("Library/Logs/PingZilla Next");
@@ -31,14 +35,31 @@ fn lifecycle_paths() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn log_lifecycle(message: &str) {
+    let Ok(_guard) = LIFECYCLE_LOG_LOCK.lock() else {
+        return;
+    };
     let Some((log_path, _)) = lifecycle_paths() else {
         return;
     };
     if let Some(directory) = log_path.parent() {
         let _ = fs::create_dir_all(directory);
     }
+    if fs::metadata(&log_path)
+        .map(|metadata| metadata.len() >= LIFECYCLE_LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        let rotated_path = log_path.with_extension("log.1");
+        let _ = fs::remove_file(&rotated_path);
+        let _ = fs::rename(&log_path, rotated_path);
+    }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = writeln!(file, "{} {}", Utc::now().to_rfc3339(), message);
+    }
+}
+
+fn write_running_marker(message: &str) {
+    if let Some((_, marker_path)) = lifecycle_paths() {
+        let _ = fs::write(marker_path, message);
     }
 }
 
@@ -47,21 +68,41 @@ fn begin_lifecycle_log(version: &str) {
         return;
     };
     if marker_path.exists() {
-        log_lifecycle("previous run ended without a clean exit");
+        let previous_marker = fs::read_to_string(&marker_path).unwrap_or_default();
+        log_lifecycle(&format!(
+            "previous run ended without a clean exit marker={}",
+            previous_marker.trim()
+        ));
     }
+    let started_at = Utc::now().to_rfc3339();
     log_lifecycle(&format!(
         "started version={} pid={}",
         version,
         std::process::id()
     ));
-    let _ = fs::write(marker_path, std::process::id().to_string());
+    write_running_marker(&format!(
+        "pid={} started_at={started_at}",
+        std::process::id()
+    ));
 }
 
-fn finish_lifecycle_log() {
-    log_lifecycle("clean exit");
+fn finish_lifecycle_log(message: &str) {
+    log_lifecycle(message);
     if let Some((_, marker_path)) = lifecycle_paths() {
         let _ = fs::remove_file(marker_path);
     }
+}
+
+fn start_lifecycle_heartbeat() {
+    tauri::async_runtime::spawn(async {
+        loop {
+            tokio::time::sleep(LIFECYCLE_HEARTBEAT_INTERVAL).await;
+            let timestamp = Utc::now().to_rfc3339();
+            let pid = std::process::id();
+            log_lifecycle(&format!("heartbeat pid={pid}"));
+            write_running_marker(&format!("pid={pid} last_heartbeat={timestamp}"));
+        }
+    });
 }
 
 fn build_ip_info_client(
@@ -168,8 +209,32 @@ pub struct NetworkSession {
     pub public_ip: String,
     pub isp: Option<String>,
     pub label: Option<String>,
+    #[serde(default)]
+    pub bssid: Option<String>,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn pingzilla_request_location_access();
+    fn pingzilla_copy_current_bssid(buffer: *mut std::ffi::c_char, buffer_length: usize) -> bool;
+}
+
+#[cfg(target_os = "macos")]
+fn current_bssid() -> Option<String> {
+    let mut buffer = [0_i8; 32];
+    let copied = unsafe { pingzilla_copy_current_bssid(buffer.as_mut_ptr(), buffer.len()) };
+    copied.then(|| {
+        unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_bssid() -> Option<String> {
+    None
 }
 
 /// A user-triggered macOS networkQuality result.
@@ -463,6 +528,7 @@ async fn ensure_network_session(
         public_ip: info.ip.clone(),
         isp: info.isp.clone(),
         label,
+        bssid: current_bssid(),
         started_at: now,
         ended_at: None,
     };
@@ -490,6 +556,36 @@ async fn ensure_network_session(
         ping.session_id = Some(session.id.clone());
     }
     Some(session)
+}
+
+#[tauri::command]
+async fn reveal_current_bssid(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        pingzilla_request_location_access();
+    }
+
+    for _ in 0..30 {
+        if let Some(bssid) = current_bssid() {
+            let current_id = state.current_session_id.lock().await.clone();
+            if let Some(current_id) = current_id {
+                if let Some(session) = state
+                    .network_sessions
+                    .lock()
+                    .await
+                    .iter_mut()
+                    .find(|session| session.id == current_id)
+                {
+                    session.bssid = Some(bssid.clone());
+                }
+                save_history_async(state.inner()).await;
+            }
+            return Ok(bssid);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Err("BSSID unavailable. Allow PingZilla to use Location Services in System Settings, then try again.".to_string())
 }
 
 #[tauri::command]
@@ -1594,6 +1690,62 @@ fn request_app_exit(app: &AppHandle) {
     });
 }
 
+#[cfg(target_os = "macos")]
+fn register_termination_signal_handlers(app: AppHandle, state: Arc<AppState>) {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    tauri::async_runtime::spawn(async move {
+        let mut hangup = match signal(SignalKind::hangup()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                log_lifecycle(&format!("failed to register SIGHUP handler: {error}"));
+                return;
+            }
+        };
+        let mut interrupt = match signal(SignalKind::interrupt()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                log_lifecycle(&format!("failed to register SIGINT handler: {error}"));
+                return;
+            }
+        };
+        let mut quit = match signal(SignalKind::quit()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                log_lifecycle(&format!("failed to register SIGQUIT handler: {error}"));
+                return;
+            }
+        };
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                log_lifecycle(&format!("failed to register SIGTERM handler: {error}"));
+                return;
+            }
+        };
+
+        let (signal_name, exit_code) = tokio::select! {
+            _ = hangup.recv() => ("SIGHUP", 129),
+            _ = interrupt.recv() => ("SIGINT", 130),
+            _ = quit.recv() => ("SIGQUIT", 131),
+            _ = terminate.recv() => ("SIGTERM", 143),
+        };
+
+        if state.shutdown_requested.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        SIGNAL_EXIT_REQUESTED.store(true, Ordering::SeqCst);
+        log_lifecycle(&format!(
+            "received signal={signal_name}; saving state and exiting"
+        ));
+        save_history_async(&state).await;
+        app.exit(exit_code);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn register_termination_signal_handlers(_app: AppHandle, _state: Arc<AppState>) {}
+
 /// Unified background service - consolidates ping, site monitoring, and VPN check into ONE timer
 /// This dramatically reduces CPU wake-ups (from 3 independent timers to 1)
 /// Battery optimization: adaptive interval (10s visible, 30s hidden), pauses during system sleep
@@ -1853,6 +2005,7 @@ fn attach_legacy_session(
             public_ip: "Unknown".to_string(),
             isp: None,
             label: Some("Unknown previous connection".to_string()),
+            bssid: None,
             started_at,
             ended_at,
         });
@@ -2427,6 +2580,7 @@ mod tests {
             public_ip: "203.0.113.1".to_string(),
             isp: Some("Example ISP".to_string()),
             label: None,
+            bssid: None,
             started_at: timestamp - chrono::Duration::minutes(5),
             ended_at: None,
         }]);
@@ -2536,6 +2690,7 @@ pub fn run() {
             get_current_ping,
             get_ping_history,
             get_network_sessions,
+            reveal_current_bssid,
             get_speed_tests,
             get_session_details,
             rename_network_session,
@@ -2602,6 +2757,8 @@ pub fn run() {
             // App Nap is allowed - macOS will manage power normally
             register_sleep_wake_observer(app_state.clone());
             schedule_macos_process_termination_guard(app.handle().clone());
+            register_termination_signal_handlers(app.handle().clone(), app_state.clone());
+            start_lifecycle_heartbeat();
 
             // Single unified background service for battery efficiency
             // Consolidates ping, site monitoring, and VPN check into ONE timer
@@ -2616,7 +2773,12 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_, event| {
             if let tauri::RunEvent::Exit = event {
-                finish_lifecycle_log();
+                let message = if SIGNAL_EXIT_REQUESTED.load(Ordering::SeqCst) {
+                    "exit after caught signal"
+                } else {
+                    "clean exit"
+                };
+                finish_lifecycle_log(message);
             }
         });
 }

@@ -9,5 +9,7 @@
     <!-- HTTPS/TLS connections are exempt from export restrictions -->
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>PingZilla uses access to Wi-Fi network information to show the BSSID of the access point your Mac is currently using. Your geographic location is not collected.</string>
 </dict>
 </plist>
